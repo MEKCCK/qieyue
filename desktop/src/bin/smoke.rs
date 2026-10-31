@@ -161,6 +161,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("home paging: no block offers a next offset");
     }
 
+    // Rank boards: catalogue plus two pages to prove paging yields new rows.
+    let catalog = fqapp_desktop::rank_catalog().await?;
+    println!(
+        "rank: {} boards / {} categories / id={}",
+        catalog.boards.len(),
+        catalog.categories.len(),
+        catalog.rank_id
+    );
+    if let Some(board) = catalog.boards.first() {
+        let page_one = fqapp_desktop::rank_page(&catalog.rank_id, &board.algo, "0", 0).await?;
+        let page_two =
+            fqapp_desktop::rank_page(&catalog.rank_id, &board.algo, "0", page_one.len()).await?;
+        let overlap = page_two
+            .iter()
+            .filter(|hit| page_one.iter().any(|a| a.id == hit.id))
+            .count();
+        println!(
+            "rank {}: page1={} page2={} overlap={overlap} first={:?}",
+            board.name,
+            page_one.len(),
+            page_two.len(),
+            page_one.first().map(|hit| hit.title.clone())
+        );
+    }
+
     // Categories: channels, dimensions and the tile counts per dimension.
     let front = fqapp_desktop::category_front(1).await?;
     println!(

@@ -35,6 +35,8 @@ enum Cmd {
     PlayAudio { book_id: String, item_id: String, title: String },
     OpenManga(String),
     Category(u32),
+    RankCatalog,
+    RankPage { rank_id: String, algo: String, category: String, offset: usize },
     Home,
     HomeChannel {
         tab_type: u32,
@@ -72,6 +74,8 @@ enum Msg {
     Played(String),
     Category(CategoryFront),
     Home(Home),
+    RankCatalog(fqapp_desktop::RankCatalog),
+    RankPage { hits: Vec<Hit>, append: bool },
     Manga { pages: Vec<String> },
     HomeAppend {
         section: usize,
@@ -135,6 +139,24 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 Ok(pages) => Msg::Manga { pages },
                 Err(err) => Msg::Error(err),
             },
+            Cmd::RankCatalog => match fqapp_desktop::rank_catalog().await {
+                Ok(catalog) => Msg::RankCatalog(catalog),
+                Err(err) => Msg::Error(err),
+            },
+            Cmd::RankPage {
+                rank_id,
+                algo,
+                category,
+                offset,
+            } => {
+                match fqapp_desktop::rank_page(&rank_id, &algo, &category, offset).await {
+                    Ok(hits) => Msg::RankPage {
+                        hits,
+                        append: offset > 0,
+                    },
+                    Err(err) => Msg::Error(err),
+                }
+            }
             Cmd::Home => match home().await {
                 Ok(home) => Msg::Home(home),
                 Err(err) => Msg::Error(err),
@@ -249,6 +271,7 @@ enum View {
     Home,
     Library,
     Manga,
+    Rank,
     Results,
     Book,
     Series,
@@ -274,6 +297,12 @@ struct App {
     paragraphs: Vec<String>,
     reader_pos: f32,
     series: Option<Series>,
+    rank: Option<fqapp_desktop::RankCatalog>,
+    rank_id: String,
+    rank_algo: String,
+    rank_category: String,
+    rank_hits: Vec<Hit>,
+    rank_more: bool,
     manga_pages: Vec<String>,
     manga_textures: Vec<egui::TextureHandle>,
     manga_pos: f32,
@@ -317,6 +346,12 @@ impl App {
             paragraphs: Vec::new(),
             reader_pos: 0.0,
             series: None,
+            rank: None,
+            rank_id: String::new(),
+            rank_algo: "101".to_string(),
+            rank_category: "0".to_string(),
+            rank_hits: Vec::new(),
+            rank_more: true,
             manga_pages: Vec::new(),
             manga_textures: Vec::new(),
             manga_pos: 0.0,
@@ -511,6 +546,36 @@ impl App {
                     self.manga_pos = 0.0;
                     self.view = View::Manga;
                 }
+                Msg::RankCatalog(catalog) => {
+                    self.rank_id = catalog.rank_id.clone();
+                    self.status = format!(
+                        "{} 个榜单 · {} 个分类",
+                        catalog.boards.len(),
+                        catalog.categories.len()
+                    );
+                    self.rank = Some(catalog);
+                    self.view = View::Rank;
+                }
+                Msg::RankPage { hits, append } => {
+                    let fresh = if append {
+                        let before = self.rank_hits.len();
+                        for hit in hits {
+                            if !self.rank_hits.iter().any(|existing| existing.id == hit.id) {
+                                self.rank_hits.push(hit);
+                            }
+                        }
+                        self.rank_hits.len() - before
+                    } else {
+                        self.rank_hits = hits;
+                        self.rank_hits.len()
+                    };
+                    // No new rows means the board is exhausted.
+                    self.rank_more = fresh > 0;
+                    self.status = format!("榜单 {} 条", self.rank_hits.len());
+                    if !self.rank_more {
+                        self.status = format!("榜单到底了（{} 条）", self.rank_hits.len());
+                    }
+                }
                 Msg::Played(text) => self.status = text,
                 Msg::Error(err) => self.status = err,
             }
@@ -680,11 +745,15 @@ impl eframe::App for App {
                 self.view = match view.as_str() {
                     "library" => View::Library,
                     "category" => View::Category,
+                    "rank" => View::Rank,
                     _ => View::Home,
                 };
                 self.shelf = load_shelf();
-                if self.view == View::Home {
-                    self.send(Cmd::Home, "加载首页…");
+                match self.view {
+                    View::Home => self.send(Cmd::Home, "加载首页…"),
+                    View::Rank => self.send(Cmd::RankCatalog, "加载榜单…"),
+                    View::Category => self.send(Cmd::Category(1), "加载分类…"),
+                    _ => {}
                 }
             }
         } else if !self.home_requested && !self.loading {
@@ -720,6 +789,9 @@ impl eframe::App for App {
                 }
                 if ui.button("首页").clicked() {
                     self.send(Cmd::Home, "加载首页…");
+                }
+                if ui.button("排行").clicked() {
+                    self.send(Cmd::RankCatalog, "加载榜单…");
                 }
                 if ui.button("分类").clicked() {
                     let tab = self.category_tab;
@@ -1211,6 +1283,134 @@ impl eframe::App for App {
                     self.query = tag.clone();
                     self.search_query = tag.clone();
                     self.send(Cmd::Search { query: tag, offset: 0 }, "搜索中…");
+                }
+            }
+            View::Rank => {
+                let Some(catalog) = self.rank.clone() else {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(80.0);
+                            ui.label(RichText::new("加载榜单…").color(Color32::GRAY));
+                        });
+                    });
+                    return;
+                };
+                let mut switch: Option<(String, String)> = None;
+                let mut clicked: Option<Hit> = None;
+                let mut load_more = false;
+
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        for board in &catalog.boards {
+                            let selected = board.algo == self.rank_algo;
+                            if ui
+                                .selectable_label(selected, RichText::new(&board.name).size(15.0))
+                                .clicked()
+                                && !selected
+                            {
+                                switch = Some((board.algo.clone(), self.rank_category.clone()));
+                            }
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        for category in &catalog.categories {
+                            let selected = category.id == self.rank_category;
+                            if ui
+                                .selectable_label(selected, RichText::new(&category.name).size(13.0))
+                                .clicked()
+                                && !selected
+                            {
+                                switch = Some((self.rank_algo.clone(), category.id.clone()));
+                            }
+                        }
+                    });
+                    ui.separator();
+                    let output = egui::ScrollArea::vertical().show(ui, |ui| {
+                        for (index, hit) in self.rank_hits.iter().enumerate() {
+                            let row = ui
+                                .horizontal(|ui| {
+                                    let rank = format!("{:>2}", index + 1);
+                                    ui.label(
+                                        RichText::new(rank)
+                                            .size(18.0)
+                                            .strong()
+                                            .color(if index < 3 {
+                                                Color32::from_rgb(220, 160, 60)
+                                            } else {
+                                                Color32::GRAY
+                                            }),
+                                    );
+                                    Self::cover(ui, &hit.cover, egui::vec2(48.0, 64.0));
+                                    ui.vertical(|ui| {
+                                        ui.label(RichText::new(&hit.title).size(15.0).strong());
+                                        ui.label(
+                                            RichText::new(&hit.author)
+                                                .size(12.0)
+                                                .color(Color32::GRAY),
+                                        );
+                                    });
+                                })
+                                .response
+                                .interact(egui::Sense::click());
+                            if row.clicked() {
+                                clicked = Some(hit.clone());
+                            }
+                            ui.separator();
+                        }
+                        if self.rank_more {
+                            ui.add_space(6.0);
+                            if ui.button("加载更多").clicked() {
+                                load_more = true;
+                            }
+                        } else if !self.rank_hits.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new("到底了").size(12.0).color(Color32::GRAY),
+                            );
+                        }
+                    });
+                    if self.rank_more
+                        && output.state.offset.y + output.inner_rect.height()
+                            >= output.content_size.y - 240.0
+                    {
+                        load_more = true;
+                    }
+                });
+
+                if let Some((algo, category)) = switch {
+                    self.rank_algo = algo.clone();
+                    self.rank_category = category.clone();
+                    self.rank_hits.clear();
+                    self.rank_more = true;
+                    let rank_id = self.rank_id.clone();
+                    self.send(
+                        Cmd::RankPage {
+                            rank_id,
+                            algo,
+                            category,
+                            offset: 0,
+                        },
+                        "加载榜单…",
+                    );
+                } else if load_more && self.rank_more && !self.loading {
+                    let offset = self.rank_hits.len();
+                    let rank_id = self.rank_id.clone();
+                    self.send(
+                        Cmd::RankPage {
+                            rank_id,
+                            algo: self.rank_algo.clone(),
+                            category: self.rank_category.clone(),
+                            offset,
+                        },
+                        "加载更多…",
+                    );
+                }
+                if let Some(hit) = clicked {
+                    match hit.series {
+                        Some(series_id) => self.send(Cmd::OpenSeries(series_id), "加载剧集…"),
+                        None => self.send(Cmd::OpenBook(hit.id), "加载目录…"),
+                    }
                 }
             }
             View::Manga => {

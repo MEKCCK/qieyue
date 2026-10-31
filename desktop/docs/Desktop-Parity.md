@@ -18,7 +18,7 @@ original does more; **todo** = not started.
 | Short dramas | `drama_page`, `series_detail` | `/videos/{vid}`, `/series/{id}` | done (episode list → mpv) |
 | Quality switching | `player_page` | `variants[]` in the stream response | todo |
 | Home recommendation feed | `home_page`, `home_provider` | `/recommend/channels`, `/recommend/homepage`, `/recommend/series-feed` | partial: 11 channels are switchable, blocks resolve through `series-feed`; comic/manga cards still unparsed |
-| Rank boards | `rank_page` | rank catalogue from the novel homepage, `/rank/{id}` | todo |
+| Rank boards | `rank_page` | catalogue from the homepage payload, `/rank/{id}?algo_type&rank_sub_info_id&offset` | done: 6 boards, 16 categories, 30 per page, auto-load |
 | Comics | `comic_reader_page` | `/manga/{item_id}` | done: pages decrypt to disk and render, 上一话/下一话 |
 | Audiobooks | `audio`, `player`, `audio_listening` | `/audio/books/{id}/chapters/{item}`, `/books/{id}/tones` | partial: the chapter track plays in mpv with its CENC key; player UI/timeline todo |
 | Comments and danmaku | `detail_page`, `series_detail` | `/books/{id}/comments`, `/series/{id}/comments`, `/videos/{vid}/danmaku` | todo |
