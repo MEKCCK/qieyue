@@ -1,0 +1,90 @@
+# Rust/Tauri checks for the two supported platforms.
+#
+# The "smoke" binary talks to the live upstream service and downloads media, so
+# it stays a local gate; CI stops at format, syntax, check, clippy and build.
+name: desktop
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            pkg-config \
+            build-essential
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-desktop-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-desktop-
+
+      # Check project sources only: rust/ is the pristine upstream copy.
+      - name: Format project sources
+        run: |
+          find desktop/src fqcore/src -name '*.rs' -print0 \
+            | xargs -0 -n1 rustfmt --edition 2021 --check --config skip_children=true
+          rustfmt --edition 2021 --check desktop/build.rs
+
+      - name: Frontend syntax
+        run: node --check desktop/ui/app.js
+
+      - name: Check workspace
+        run: cargo check --workspace --locked
+
+      - name: Clippy
+        run: cargo clippy -p qieyue -p fqcore --all-targets --locked -- -D warnings
+
+      - name: Build Tauri app
+        run: cargo build -p qieyue --bins --locked
+
+  upstream:
+    name: upstream core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify rust/ matches ch6vip/fqapp
+        run: ./scripts/sync-backend.sh --check
