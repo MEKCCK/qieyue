@@ -123,6 +123,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Home paging: pull one more page of a block that advertises a next offset.
+    match front_home
+        .sections
+        .iter()
+        .find(|section| section.next_offset.is_some())
+    {
+        Some(section) => {
+            let before = section.hits.len();
+            let next = section.next_offset.unwrap_or(0);
+            let (more, after) = fqapp_desktop::home_more(
+                &section.cell_id,
+                section.tab_type,
+                &section.client_template,
+                next,
+            )
+            .await?;
+            let blank = more
+                .iter()
+                .filter(|hit| hit.title.trim().is_empty() && hit.cover.is_empty())
+                .count();
+            println!(
+                "home paging: {} {before} -> +{} cards (blank {blank}), next {:?} -> {:?}",
+                section.title,
+                more.len(),
+                Some(next),
+                after
+            );
+        }
+        None => println!("home paging: no block offers a next offset"),
+    }
+
     // Channel switching: pick the tab by name from the page's own channel list, because the
     // index and template differ per channel.
     for label in ["小说", "听书", "漫画", "看剧", "视频"] {

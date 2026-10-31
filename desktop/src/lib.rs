@@ -639,6 +639,10 @@ pub async fn series_feed_page(
     // `cell_data` list of rows. `hit_from_item` understands the first two.
     let mut push = |item: &Value, hits: &mut Vec<Hit>| {
         if let Some(hit) = hit_from_item(item) {
+            // A row with neither a title nor artwork would render as an empty card.
+            if hit.title.trim().is_empty() && hit.cover.is_empty() {
+                return;
+            }
             if !hits.iter().any(|existing: &Hit| existing.id == hit.id) {
                 hits.push(hit);
             }
@@ -834,7 +838,8 @@ async fn parse_home(json: Value, active: usize, client_template: &str) -> Result
             let mut next_offset = None;
             let mut feed_id = String::new();
             let cell_id = text_of(cell, "cell_id_str");
-            if !cell_id.is_empty() && tab_type != 0 {
+            let is_rank_preview = title.contains("排行榜");
+            if !is_rank_preview && !cell_id.is_empty() && tab_type != 0 {
                 match series_feed_page(&cell_id, tab_type, client_template, 0).await {
                     Ok((extra, next)) => {
                         for hit in extra {

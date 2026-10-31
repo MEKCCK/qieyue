@@ -322,6 +322,9 @@ struct App {
     home: Option<Home>,
     home_tab_index: u32,
     home_loading_more: bool,
+    /// When the user last scrolled; auto-paging only reacts to a recent gesture, never to a
+    /// restored scroll offset.
+    last_scroll: std::time::Instant,
     home_requested: bool,
     category: Option<CategoryFront>,
     category_tab: u32,
@@ -372,6 +375,7 @@ impl App {
             home: None,
             home_tab_index: 0,
             home_loading_more: false,
+            last_scroll: std::time::Instant::now() - std::time::Duration::from_secs(3600),
             home_requested: false,
             category: None,
             category_tab: 1,
@@ -570,7 +574,9 @@ impl App {
                                     target.hits.push(hit);
                                 }
                             }
-                            target.next_offset = next;
+                            // Hard cap: past this the block is a performance hazard (every card
+                            // keeps a texture) and the user cannot meaningfully browse it.
+                            target.next_offset = if target.hits.len() >= 240 { None } else { next };
                             let total: usize = home.sections.iter().map(|s| s.hits.len()).sum();
                             self.status = format!("已加载 {total} 张卡片");
                         }
@@ -810,6 +816,13 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Auto-paging must follow a real scroll gesture. egui restores the scroll offset of a
+        // ScrollArea between frames, so "the offset is near the bottom" is true even when the
+        // user has not touched anything — that is what made the home page page forever.
+        if ctx.input(|i| i.raw_scroll_delta.y.abs() > 0.5) {
+            self.last_scroll = std::time::Instant::now();
+        }
+        let scrolled_now = self.last_scroll.elapsed() < std::time::Duration::from_millis(600);
         // egui only redraws on input by default; without this the result of an in-flight
         // request can sit in the channel forever because nothing wakes the event loop.
         if self.loading || self.home.is_none() {
@@ -1004,8 +1017,13 @@ impl eframe::App for App {
                             }
                         }
                     });
-                    at_bottom = output.state.offset.y + output.inner_rect.height()
-                        >= output.content_size.y - 260.0;
+                    // Guard against the "content shorter than the viewport" case: there the sum
+                    // is always past the threshold and the view would page forever.
+                    let scrollable = output.content_size.y > output.inner_rect.height() + 32.0;
+                    at_bottom = scrolled_now
+                        && scrollable
+                        && output.state.offset.y + output.inner_rect.height()
+                            >= output.content_size.y - 200.0;
                 });
 
                 if load_more.is_none() && at_bottom {
@@ -1109,9 +1127,12 @@ impl eframe::App for App {
                         }
                     });
                     if self.search_next.is_some() {
-                        let bottom =
-                            output.state.offset.y + output.inner_rect.height();
-                        if bottom >= output.content_size.y - 240.0 {
+                        let scrollable = output.content_size.y > output.inner_rect.height() + 32.0;
+                        if scrolled_now
+                            && scrollable
+                            && output.state.offset.y + output.inner_rect.height()
+                                >= output.content_size.y - 200.0
+                        {
                             load_more = true;
                         }
                     }
@@ -1511,9 +1532,12 @@ impl eframe::App for App {
                             );
                         }
                     });
+                    let scrollable = output.content_size.y > output.inner_rect.height() + 32.0;
                     if self.rank_more
+                        && scrolled_now
+                        && scrollable
                         && output.state.offset.y + output.inner_rect.height()
-                            >= output.content_size.y - 240.0
+                            >= output.content_size.y - 200.0
                     {
                         load_more = true;
                     }
