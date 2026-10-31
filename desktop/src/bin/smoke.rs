@@ -41,6 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         title: title.clone(),
         author: author.clone(),
         cover: detail.cover.clone(),
+        kind: "book".to_string(),
         item_id: chapter.item_id.clone(),
         chapter_title: chapter_title.clone(),
         index: 0,
@@ -67,6 +68,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for episode in series.episodes.iter().take(3) {
                 println!("  ep{} {} vid={}", episode.index, episode.title, episode.vid);
             }
+            // Shelf support for dramas: one entry, kind=series, resumable at an episode.
+            let entry = fqapp_desktop::series_shelf_entry(&series, series.episodes.first());
+            fqapp_desktop::add_shelf(entry.clone())?;
+            let stored = fqapp_desktop::load_shelf()
+                .into_iter()
+                .find(|row| row.id == entry.id);
+            println!(
+                "series shelf: kind={:?} chapter={:?} cover={}",
+                stored.as_ref().map(|row| row.kind.clone()),
+                stored.as_ref().map(|row| row.chapter_title.clone()),
+                stored.as_ref().map(|row| !row.cover.is_empty()).unwrap_or(false)
+            );
+            fqapp_desktop::remove_shelf(&entry.id)?;
+
             if let Some(episode) = series.episodes.first() {
                 let (path, key) = fqapp_desktop::resolve_episode(&episode.vid).await?;
                 let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -181,6 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         title: "测试".to_string(),
         author: String::new(),
         cover: String::new(),
+        kind: "book".to_string(),
         item_id: String::new(),
         chapter_title: String::new(),
         index: 0,

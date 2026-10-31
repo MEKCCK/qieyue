@@ -29,7 +29,7 @@ struct BookInfo {
 enum Cmd {
     Search { query: String, offset: usize },
     OpenBook(String),
-    OpenSeries(String),
+    OpenSeries { id: String, cover: String },
     OpenChapter(String),
     PlayEpisode { vid: String, title: String },
     PlayAudio { book_id: String, item_id: String, title: String },
@@ -118,8 +118,14 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 },
                 Err(err) => Msg::Error(err),
             },
-            Cmd::OpenSeries(id) => match open_series(&id).await {
-                Ok(series) => Msg::Series(series),
+            Cmd::OpenSeries { id, cover } => match open_series(&id).await {
+                Ok(mut series) => {
+                    // The series endpoint often omits the artwork the card already had.
+                    if series.cover.is_empty() {
+                        series.cover = cover;
+                    }
+                    Msg::Series(series)
+                }
                 Err(err) => Msg::Error(err),
             },
             Cmd::OpenChapter(item_id) => match read_chapter(&item_id).await {
@@ -462,7 +468,18 @@ impl App {
                     self.chapters = chapters;
                     self.go(View::Book);
                     if self.demo_manga_stage == 0 {
-                        if let Ok(book) = std::env::var("FQAPP_DEMO_MANGA") {
+                        if let Ok(series_id) = std::env::var("FQAPP_DEMO_SERIES") {
+            if !self.home_requested && !self.loading {
+                self.home_requested = true;
+                self.send(
+                    Cmd::OpenSeries {
+                        id: series_id,
+                        cover: String::new(),
+                    },
+                    "加载剧集…",
+                );
+            }
+        } else if let Ok(book) = std::env::var("FQAPP_DEMO_MANGA") {
                             if book == self.book.as_ref().map(|b| b.id.clone()).unwrap_or_default() {
                                 if let Some(chapter) = self.chapters.first().cloned() {
                                     self.demo_manga_stage = 1;
@@ -658,6 +675,26 @@ impl App {
         }
     }
 
+    /// Same toggle for short dramas: the shelf entry remembers the episode to resume at.
+    fn toggle_series_shelf(&mut self) {
+        let Some(series) = self.series.clone() else {
+            return;
+        };
+        if shelf_contains(&series.id) {
+            self.status = match remove_shelf(&series.id) {
+                Ok(()) => "已移出书架".to_string(),
+                Err(err) => err,
+            };
+        } else {
+            let entry = fqapp_desktop::series_shelf_entry(&series, series.episodes.first());
+            self.status = match add_shelf(entry) {
+                Ok(_) => "已加入书架".to_string(),
+                Err(err) => err,
+            };
+        }
+        self.shelf = load_shelf();
+    }
+
     /// Adds the current book to the shelf, or removes it when it is already there.
     fn toggle_shelf(&mut self) {
         let Some(book) = self.book.clone() else {
@@ -680,6 +717,7 @@ impl App {
                 title: book.title.clone(),
                 author: book.author.clone(),
                 cover: book.cover.clone(),
+                kind: "book".to_string(),
                 item_id,
                 chapter_title,
                 index: self.chapter_index,
@@ -713,6 +751,16 @@ impl App {
     }
 
     fn open_shelf_entry(&mut self, entry: ShelfEntry) {
+        if entry.kind == "series" {
+            self.send(
+                Cmd::OpenSeries {
+                    id: entry.id,
+                    cover: entry.cover.clone(),
+                },
+                "加载剧集…",
+            );
+            return;
+        }
         self.pending_item = Some(entry.item_id);
         self.send(Cmd::OpenBook(entry.id), "加载目录…");
     }
@@ -768,7 +816,18 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
         self.poll();
-        if let Ok(book) = std::env::var("FQAPP_DEMO_MANGA") {
+        if let Ok(series_id) = std::env::var("FQAPP_DEMO_SERIES") {
+            if !self.home_requested && !self.loading {
+                self.home_requested = true;
+                self.send(
+                    Cmd::OpenSeries {
+                        id: series_id,
+                        cover: String::new(),
+                    },
+                    "加载剧集…",
+                );
+            }
+        } else if let Ok(book) = std::env::var("FQAPP_DEMO_MANGA") {
             if self.demo_manga_stage == 0 && !self.home_requested && !self.loading {
                 self.home_requested = true;
                 self.send(Cmd::OpenBook(book), "打开漫画…");
@@ -996,7 +1055,7 @@ impl eframe::App for App {
                 }
                 if let Some(hit) = clicked {
                     match hit.series {
-                        Some(series_id) => self.send(Cmd::OpenSeries(series_id), "加载剧集…"),
+                        Some(series_id) => self.send(Cmd::OpenSeries { id: series_id, cover: hit.cover.clone() }, "加载剧集…"),
                         None => self.send(Cmd::OpenBook(hit.id), "加载目录…"),
                     }
                 }
@@ -1065,7 +1124,7 @@ impl eframe::App for App {
                 }
                 if let Some(hit) = clicked {
                     match hit.series {
-                        Some(series_id) => self.send(Cmd::OpenSeries(series_id), "加载剧集…"),
+                        Some(series_id) => self.send(Cmd::OpenSeries { id: series_id, cover: hit.cover.clone() }, "加载剧集…"),
                         None => self.send(Cmd::OpenBook(hit.id), "加载目录…"),
                     }
                 }
@@ -1210,6 +1269,7 @@ impl eframe::App for App {
                     return;
                 };
                 let mut play = None;
+                let mut toggle_shelf_now = false;
                 egui::CentralPanel::default().show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.add_space(8.0);
@@ -1217,10 +1277,22 @@ impl eframe::App for App {
                             Self::cover(ui, &series.cover, egui::vec2(92.0, 124.0));
                             ui.vertical(|ui| {
                                 ui.label(RichText::new(&series.title).size(22.0).strong());
-                                ui.label(
-                                    RichText::new(format!("共 {} 集", series.episodes.len()))
-                                        .color(Color32::GRAY),
-                                );
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("共 {} 集", series.episodes.len()))
+                                            .color(Color32::GRAY),
+                                    );
+                                    ui.separator();
+                                    let in_shelf = shelf_contains(&series.id);
+                                    let label = if in_shelf {
+                                        "已在书架（点击移出）"
+                                    } else {
+                                        "加入书架"
+                                    };
+                                    if ui.button(label).clicked() {
+                                        toggle_shelf_now = true;
+                                    }
+                                });
                                 ui.label(RichText::new(&series.intro).size(13.0));
                             });
                         });
@@ -1248,7 +1320,29 @@ impl eframe::App for App {
                         }
                     });
                 });
+                if toggle_shelf_now {
+                    self.toggle_series_shelf();
+                }
                 if let Some((vid, title)) = play {
+                    // Keep the resume point in step with what is being watched.
+                    if let Some(series) = self.series.clone() {
+                        if shelf_contains(&series.id) {
+                            if let Some(episode) = series
+                                .episodes
+                                .iter()
+                                .find(|episode| episode.vid == vid)
+                                .cloned()
+                            {
+                                update_progress(
+                                    &series.id,
+                                    &vid,
+                                    &format!("第 {} 集", episode.index),
+                                    episode.index.saturating_sub(1),
+                                );
+                                self.shelf = load_shelf();
+                            }
+                        }
+                    }
                     self.send(Cmd::PlayEpisode { vid, title }, "解析视频地址…");
                 }
             }
@@ -1455,7 +1549,7 @@ impl eframe::App for App {
                 }
                 if let Some(hit) = clicked {
                     match hit.series {
-                        Some(series_id) => self.send(Cmd::OpenSeries(series_id), "加载剧集…"),
+                        Some(series_id) => self.send(Cmd::OpenSeries { id: series_id, cover: hit.cover.clone() }, "加载剧集…"),
                         None => self.send(Cmd::OpenBook(hit.id), "加载目录…"),
                     }
                 }

@@ -452,9 +452,33 @@ pub struct ShelfEntry {
     /// Cover URL, so the shelf page can render a real grid like the original.
     #[serde(default)]
     pub cover: String,
+    /// `book` or `series`; series are short dramas / videos and open the episode list instead of
+    /// a chapter directory.
+    #[serde(default = "default_kind")]
+    pub kind: String,
     pub item_id: String,
     pub chapter_title: String,
     pub index: usize,
+}
+
+fn default_kind() -> String {
+    "book".to_string()
+}
+
+/// Shelf row for a short drama: `item_id` holds the episode to resume at.
+pub fn series_shelf_entry(series: &Series, progress: Option<&Episode>) -> ShelfEntry {
+    ShelfEntry {
+        id: series.id.clone(),
+        title: series.title.clone(),
+        author: String::new(),
+        cover: series.cover.clone(),
+        kind: "series".to_string(),
+        item_id: progress.map(|episode| episode.vid.clone()).unwrap_or_default(),
+        chapter_title: progress
+            .map(|episode| format!("第 {} 集", episode.index))
+            .unwrap_or_else(|| format!("共 {} 集", series.episodes.len())),
+        index: progress.map(|episode| episode.index.saturating_sub(1)).unwrap_or(0),
+    }
 }
 
 pub fn data_dir() -> std::path::PathBuf {
