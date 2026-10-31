@@ -335,12 +335,26 @@ pub struct Episode {
 pub fn series_from_hit(value: &Value) -> Option<(String, String, String)> {
     let first = value.get("video_data")?.as_array()?.first()?;
     let id = text_of(first, "series_id");
+    let detail = value
+        .get("video_detail")
+        .or_else(|| first.get("video_detail"))
+        .cloned()
+        .unwrap_or(Value::Null);
     let title = first_non_empty(&[
         text_of(first, "raw_book_name"),
         text_of(first, "series_title"),
         text_of(first, "title"),
+        text_of(&detail, "series_title"),
+        text_of(&detail, "title"),
     ]);
-    let cover = first_non_empty(&[text_of(first, "cover"), text_of(first, "horiz_cover")]);
+    let cover = first_non_empty(&[
+        text_of(first, "cover"),
+        text_of(first, "horiz_cover"),
+        text_of(&detail, "cover"),
+        text_of(&detail, "series_cover"),
+        text_of(&detail, "horiz_cover"),
+        text_of(first, "episode_cover"),
+    ]);
     if id.is_empty() {
         None
     } else {
@@ -542,6 +556,7 @@ pub async fn search_hits(query: &str) -> Result<Vec<Hit>, String> {
 pub async fn series_feed_page(
     cell_id: &str,
     tab_type: u32,
+    client_template: &str,
     offset: usize,
 ) -> Result<(Vec<Hit>, Option<usize>), String> {
     // A channel without a `tab_type` cannot answer a feed request at all (HTTP 400); its blocks
@@ -553,12 +568,17 @@ pub async fn series_feed_page(
     // Parameter sets differ per block: some accept the selector hint, some reject it. Try the
     // richest first and fall back to the bare form instead of failing the whole page.
     let selector = if offset == 0 { 2 } else { 1 };
+    let template = if client_template.is_empty() {
+        "2"
+    } else {
+        client_template
+    };
     let candidates = [
         format!(
-            "cell_id={cell_id}&tab_type={tab_type}&client_template=2&client_req_type=2&offset={offset}&unlimited_selector_change_type={selector}"
+            "cell_id={cell_id}&tab_type={tab_type}&client_template={template}&client_req_type=2&offset={offset}&unlimited_selector_change_type={selector}"
         ),
         format!(
-            "cell_id={cell_id}&tab_type={tab_type}&client_template=2&client_req_type=2&offset={offset}"
+            "cell_id={cell_id}&tab_type={tab_type}&client_template={template}&client_req_type=2&offset={offset}"
         ),
         format!("cell_id={cell_id}&tab_type={tab_type}&offset={offset}"),
     ];
@@ -591,12 +611,12 @@ pub async fn series_feed_page(
         .filter(|_| has_more);
 
     let mut hits = Vec::new();
-    let mut collect = |items: &[Value]| {
-        for item in items {
-            if let Some(hit) = hit_from_item(item) {
-                if !hits.iter().any(|existing: &Hit| existing.id == hit.id) {
-                    hits.push(hit);
-                }
+    // Groups carry their payload in one of three shapes: `video_data`, `book_data`, or a nested
+    // `cell_data` list of rows. `hit_from_item` understands the first two.
+    let mut push = |item: &Value, hits: &mut Vec<Hit>| {
+        if let Some(hit) = hit_from_item(item) {
+            if !hits.iter().any(|existing: &Hit| existing.id == hit.id) {
+                hits.push(hit);
             }
         }
     };
@@ -607,28 +627,46 @@ pub async fn series_feed_page(
         .into_iter()
         .flatten()
     {
-        collect(
-            group
-                .get("cell_data")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]),
-        );
+        push(group, &mut hits);
+        for item in group
+            .get("cell_data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            push(item, &mut hits);
+        }
+        for item in group
+            .get("book_data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            push(item, &mut hits);
+        }
     }
     Ok((hits, next_offset))
 }
 
-pub async fn series_feed(cell_id: &str, tab_type: u32, offset: usize) -> Result<Vec<Hit>, String> {
-    Ok(series_feed_page(cell_id, tab_type, offset).await?.0)
+pub async fn series_feed(
+    cell_id: &str,
+    tab_type: u32,
+    client_template: &str,
+    offset: usize,
+) -> Result<Vec<Hit>, String> {
+    Ok(series_feed_page(cell_id, tab_type, client_template, offset)
+        .await?
+        .0)
 }
 
 /// Pulls the next page of one home block.
 pub async fn home_more(
     cell_id: &str,
     tab_type: u32,
+    client_template: &str,
     offset: usize,
 ) -> Result<(Vec<Hit>, Option<usize>), String> {
-    series_feed_page(cell_id, tab_type, offset).await
+    series_feed_page(cell_id, tab_type, client_template, offset).await
 }
 
 /// `/api/v1/recommend/homepage` returns `data.tab_item[]`, and each tab carries `cell_data[]`
@@ -641,6 +679,8 @@ pub struct HomeSection {
     /// Feed blocks can be paged; a plain card grid (e.g. 排行榜) arrives complete and has none.
     pub cell_id: String,
     pub tab_type: u32,
+    /// The channel's own template; feed requests are rejected when it does not match.
+    pub client_template: String,
     pub next_offset: Option<usize>,
 }
 
@@ -658,6 +698,8 @@ pub struct Home {
     /// Top channels of the discovery page (`推荐`, `小说`, `听书`, …).
     pub tabs: Vec<HomeTab>,
     pub sections: Vec<HomeSection>,
+    /// The channel this payload describes; the view highlights this, not whatever was clicked.
+    pub active: u32,
 }
 
 /// Loads one channel of the discovery page. `tab_index` selects the channel, and
@@ -671,12 +713,12 @@ pub async fn home_channel(
         "tab_type={tab_type}&offset=0&tab_index={tab_index}&last_tab_index=-1&client_template={client_template}"
     );
     let json = api_get("/api/v1/recommend/homepage", &query).await?;
-    let home = parse_home(json.clone(), tab_index as usize).await;
+    let home = parse_home(json.clone(), tab_index as usize, client_template).await;
     if matches!(&home, Ok(home) if home.sections.is_empty()) {
         // An empty page is what a throttled call looks like; give it one more chance.
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let retry = api_get("/api/v1/recommend/homepage", &query).await?;
-        if let Ok(retry) = parse_home(retry, tab_index as usize).await {
+        if let Ok(retry) = parse_home(retry, tab_index as usize, client_template).await {
             if !retry.sections.is_empty() {
                 return Ok(retry);
             }
@@ -689,7 +731,7 @@ pub async fn home() -> Result<Home, String> {
     home_channel(2, 0, "0").await
 }
 
-async fn parse_home(json: Value, active: usize) -> Result<Home, String> {
+async fn parse_home(json: Value, active: usize, client_template: &str) -> Result<Home, String> {
     let data = json.get("data").cloned().unwrap_or(Value::Null);
 
     let mut tabs = Vec::new();
@@ -703,13 +745,13 @@ async fn parse_home(json: Value, active: usize) -> Result<Home, String> {
     {
         let title = text_of(tab, "title");
         let tab_type: u32 = text_of(tab, "tab_type").parse().unwrap_or(0);
-        let client_template = text_of(tab, "client_template");
+        let tab_template = text_of(tab, "client_template");
         if !title.is_empty() {
             tabs.push(HomeTab {
                 title,
                 tab_type,
                 index: index as u32,
-                client_template,
+                client_template: tab_template,
             });
         }
         if index != active {
@@ -763,21 +805,13 @@ async fn parse_home(json: Value, active: usize) -> Result<Home, String> {
                     series: None,
                 });
             }
-            // Feed blocks arrive as one container item whose own `cell_data` holds the cards.
-            let feed_cell = cell
-                .get("cell_data")
-                .and_then(Value::as_array)
-                .and_then(|items| {
-                    items
-                        .iter()
-                        .find(|item| item.get("cell_data").and_then(Value::as_array).is_some())
-                        .map(|_| text_of(cell, "cell_id_str"))
-                })
-                .filter(|id| !id.is_empty());
+            // Any block with an id can also be paged through `series-feed`: that is where
+            // 看剧/视频 blocks get their remaining rows and the offsets for 加载更多.
             let mut next_offset = None;
             let mut feed_id = String::new();
-            if let Some(cell_id) = feed_cell {
-                match series_feed_page(&cell_id, tab_type, 0).await {
+            let cell_id = text_of(cell, "cell_id_str");
+            if !cell_id.is_empty() && tab_type != 0 {
+                match series_feed_page(&cell_id, tab_type, client_template, 0).await {
                     Ok((extra, next)) => {
                         for hit in extra {
                             if !hits.iter().any(|existing: &Hit| existing.id == hit.id) {
@@ -799,13 +833,22 @@ async fn parse_home(json: Value, active: usize) -> Result<Home, String> {
                     hits,
                     cell_id: feed_id,
                     tab_type,
+                    client_template: client_template.to_string(),
                     next_offset,
                 });
             }
         }
     }
 
-    Ok(Home { tabs, sections })
+    let active = text_of(&data, "tab_index")
+        .parse::<u32>()
+        .unwrap_or(active as u32);
+
+    Ok(Home {
+        tabs,
+        sections,
+        active,
+    })
 }
 
 /// One card from a feed cell, search result or shelf row.
@@ -820,6 +863,32 @@ fn hit_from_item(item: &Value) -> Option<Hit> {
             series: Some(series_id),
         });
     }
+    // Flat video rows (the 视频 channel) carry `series_id`/`vid` directly, with the artwork and
+    // title under `video_detail`.
+    let series_id = text_of(item, "series_id");
+    if !series_id.is_empty() {
+        let detail = item.get("video_detail").cloned().unwrap_or(Value::Null);
+        let title = first_non_empty(&[
+            text_of(&detail, "title"),
+            text_of(item, "title"),
+            text_of(&detail, "series_title"),
+        ]);
+        let cover = first_non_empty(&[
+            text_of(&detail, "cover"),
+            text_of(&detail, "horiz_cover"),
+            text_of(item, "cover"),
+            text_of(item, "horiz_cover"),
+        ]);
+        return Some(Hit {
+            id: series_id.clone(),
+            title,
+            author: String::new(),
+            summary: String::new(),
+            cover,
+            series: Some(series_id),
+        });
+    }
+
     let book = item.get("book_data")?.as_array()?.first()?;
     let id = text_of(book, "book_id");
     if id.is_empty() {

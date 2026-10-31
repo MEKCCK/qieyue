@@ -108,82 +108,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Channel switching: the same page with a different tab_type/tab_index/client_template.
-    for (label, tab_type, index, template) in [
-        ("小说", 25u32, 1u32, "12"),
-        ("听书", 5, 4, "12"),
-        ("漫画", 9, 7, "4"),
-    ] {
-        match fqapp_desktop::home_channel(tab_type, index, template).await {
+    // Channel switching: pick the tab by name from the page's own channel list, because the
+    // index and template differ per channel.
+    for label in ["小说", "听书", "漫画", "看剧", "视频"] {
+        let Some(tab) = front_home.tabs.iter().find(|tab| tab.title == label) else {
+            println!("channel {label}: not in the channel list");
+            continue;
+        };
+        match fqapp_desktop::home_channel(tab.tab_type, tab.index, &tab.client_template).await {
             Ok(channel) => {
                 let cards: usize = channel.sections.iter().map(|s| s.hits.len()).sum();
+                let cover = channel
+                    .sections
+                    .iter()
+                    .flat_map(|s| s.hits.iter())
+                    .find(|hit| !hit.cover.is_empty())
+                    .map(|hit| hit.title.clone());
+                let next = channel.sections.iter().find_map(|s| s.next_offset);
                 println!(
-                    "channel {label}: {} sections / {cards} cards / first={:?}",
-                    channel.sections.len(),
-                    channel.sections.first().map(|s| s.title.clone())
+                    "channel {label} (type={} idx={} tpl={}): {cards} cards / paging={next:?} / cover={cover:?}",
+                    tab.tab_type, tab.index, tab.client_template
                 );
             }
             Err(err) => println!("channel {label}: {err}"),
         }
-    }
-
-    // Audiobook: the play-info envelope must yield a stream URL mpv can open.
-    if let Ok(tones) = fqapp_desktop::api_get("/api/v1/books/7542602438201576472/tones", "").await {
-        let data = tones.get("data").cloned().unwrap_or_default();
-        let rows = data.get("audio_tones").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0);
-        println!("tones probe: code={:?} data_keys={:?} rows={rows}",
-            tones.get("code"), data.as_object().map(|o| o.keys().take(4).cloned().collect::<Vec<_>>()));
-    }
-    match fqapp_desktop::audio_for_chapter(&first.id, &chapter.item_id).await {
-        Ok((url, key, tone)) => println!(
-            "audio: tone={tone} key={} url={}",
-            if key.is_empty() { "none" } else { "16-byte" },
-            &url[..url.len().min(60)]
-        ),
-        Err(err) => println!("audio failed: {err}"),
-    }
-
-    // Home paging: pull one more page of the first block that advertises a next offset.
-    if let Some(section) = front_home
-        .sections
-        .iter()
-        .find(|section| section.next_offset.is_some())
-    {
-        let before = section.hits.len();
-        let next = section.next_offset.unwrap();
-        let (more, after) =
-            fqapp_desktop::home_more(&section.cell_id, section.tab_type, next).await?;
-        println!(
-            "home paging: {} {} -> +{} cards, next {:?} -> {:?}",
-            section.title, before, more.len(), Some(next), after
-        );
-    } else {
-        println!("home paging: no block offers a next offset");
-    }
-
-    // Rank boards: catalogue plus two pages to prove paging yields new rows.
-    let catalog = fqapp_desktop::rank_catalog().await?;
-    println!(
-        "rank: {} boards / {} categories / id={}",
-        catalog.boards.len(),
-        catalog.categories.len(),
-        catalog.rank_id
-    );
-    if let Some(board) = catalog.boards.first() {
-        let page_one = fqapp_desktop::rank_page(&catalog.rank_id, &board.algo, "0", 0).await?;
-        let page_two =
-            fqapp_desktop::rank_page(&catalog.rank_id, &board.algo, "0", page_one.len()).await?;
-        let overlap = page_two
-            .iter()
-            .filter(|hit| page_one.iter().any(|a| a.id == hit.id))
-            .count();
-        println!(
-            "rank {}: page1={} page2={} overlap={overlap} first={:?}",
-            board.name,
-            page_one.len(),
-            page_two.len(),
-            page_one.first().map(|hit| hit.title.clone())
-        );
     }
 
     // Categories: channels, dimensions and the tile counts per dimension.

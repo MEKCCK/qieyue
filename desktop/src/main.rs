@@ -47,6 +47,7 @@ enum Cmd {
         section: usize,
         cell_id: String,
         tab_type: u32,
+        client_template: String,
         offset: usize,
     },
 }
@@ -174,8 +175,9 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 section,
                 cell_id,
                 tab_type,
+                client_template,
                 offset,
-            } => match fqapp_desktop::home_more(&cell_id, tab_type, offset).await {
+            } => match fqapp_desktop::home_more(&cell_id, tab_type, &client_template, offset).await {
                 Ok((hits, next)) => Msg::HomeAppend {
                     section,
                     hits,
@@ -269,7 +271,7 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
     Empty,
     Home,
@@ -291,6 +293,7 @@ struct App {
     loading: bool,
 
     view: View,
+    history: Vec<View>,
     hits: Vec<Hit>,
     search_query: String,
     search_next: Option<usize>,
@@ -340,6 +343,7 @@ impl App {
             status: "输入关键词开始搜索".to_string(),
             loading: false,
             view: View::Empty,
+            history: Vec::new(),
             hits: Vec::new(),
             search_query: String::new(),
             search_next: None,
@@ -386,6 +390,18 @@ impl App {
         }
     }
 
+    /// Navigates and remembers where we came from, so 返回 always has somewhere to go.
+    fn go(&mut self, view: View) {
+        if view != self.view {
+            self.history.push(self.view);
+            self.view = view;
+        }
+    }
+
+    fn go_back(&mut self) {
+        self.view = self.history.pop().unwrap_or(View::Home);
+    }
+
     fn send(&mut self, cmd: Cmd, status: &str) {
         self.loading = true;
         self.status = status.to_string();
@@ -422,7 +438,7 @@ impl App {
                         }
                     );
                     if !append {
-                        self.view = View::Results;
+                        self.go(View::Results);
                     }
                 }
                 Msg::Detail {
@@ -444,7 +460,7 @@ impl App {
                         is_comic,
                     });
                     self.chapters = chapters;
-                    self.view = View::Book;
+                    self.go(View::Book);
                     if self.demo_manga_stage == 0 {
                         if let Ok(book) = std::env::var("FQAPP_DEMO_MANGA") {
                             if book == self.book.as_ref().map(|b| b.id.clone()).unwrap_or_default() {
@@ -467,13 +483,13 @@ impl App {
                 Msg::Series(series) => {
                     self.status = format!("{} · {} 集", series.title, series.episodes.len());
                     self.series = Some(series);
-                    self.view = View::Series;
+                    self.go(View::Series);
                 }
                 Msg::Chapter { title, paragraphs } => {
                     self.chapter_title = title.clone();
                     self.paragraphs = paragraphs;
                     self.reader_pos = 0.0;
-                    self.view = View::Reader;
+                    self.go(View::Reader);
                     self.status = format!(
                         "{} / {}",
                         self.chapter_index + 1,
@@ -502,9 +518,10 @@ impl App {
                         front.tabs.len()
                     );
                     self.category = Some(front);
-                    self.view = View::Category;
+                    self.go(View::Category);
                 }
                 Msg::Home(home) => {
+                    self.home_tab_index = home.active;
                     if let Some((tab_type, tab_index, client_template)) = self.demo_channel.take() {
                         self.home_tab_index = tab_index;
                         self.send(
@@ -522,7 +539,7 @@ impl App {
                         home.sections.iter().map(|s| s.hits.len()).sum::<usize>()
                     );
                     self.home = Some(home);
-                    self.view = View::Home;
+                    self.go(View::Home);
                 }
                 Msg::HomeAppend {
                     section,
@@ -548,7 +565,7 @@ impl App {
                     self.manga_pages = pages;
                     self.manga_textures.clear();
                     self.manga_pos = 0.0;
-                    self.view = View::Manga;
+                    self.go(View::Manga);
                 }
                 Msg::RankCatalog(catalog) => {
                     self.rank_id = catalog.rank_id.clone();
@@ -558,7 +575,7 @@ impl App {
                         catalog.categories.len()
                     );
                     self.rank = Some(catalog);
-                    self.view = View::Rank;
+                    self.go(View::Rank);
                 }
                 Msg::RankPage { hits, append } => {
                     let fresh = if append {
@@ -802,7 +819,7 @@ impl eframe::App for App {
                 }
                 if ui.button("书架").clicked() {
                     self.shelf = load_shelf();
-                    self.view = View::Library;
+                    self.go(View::Library);
                 }
                 if ui.button("首页").clicked() {
                     self.send(Cmd::Home, "加载首页…");
@@ -815,10 +832,7 @@ impl eframe::App for App {
                     self.send(Cmd::Category(tab), "加载分类…");
                 }
                 if self.view != View::Empty && ui.button("返回").clicked() {
-                    self.view = match self.view {
-                        View::Reader => View::Book,
-                        _ => View::Results,
-                    };
+                    self.go_back();
                 }
                 ui.separator();
                 let color = if self.loading {
@@ -856,7 +870,7 @@ impl eframe::App for App {
                 };
                 let mut clicked: Option<Hit> = None;
                 let mut switch_tab: Option<(u32, u32, String)> = None;
-                let mut load_more: Option<(usize, String, u32, usize)> = None;
+                let mut load_more: Option<(usize, String, u32, String, usize)> = None;
                 let mut open_rank = false;
                 let mut at_bottom = false;
 
@@ -925,6 +939,7 @@ impl eframe::App for App {
                                     index,
                                     section.cell_id.clone(),
                                     section.tab_type,
+                                    section.client_template.clone(),
                                     section.next_offset.unwrap_or(0),
                                 ));
                             }
@@ -945,11 +960,12 @@ impl eframe::App for App {
                             index,
                             section.cell_id.clone(),
                             section.tab_type,
+                            section.client_template.clone(),
                             section.next_offset.unwrap_or(0),
                         ));
                     }
                 }
-                if let Some((section, cell_id, tab_type, offset)) = load_more {
+                if let Some((section, cell_id, tab_type, client_template, offset)) = load_more {
                     if !self.home_loading_more {
                         self.home_loading_more = true;
                         self.send(
@@ -957,6 +973,7 @@ impl eframe::App for App {
                                 section,
                                 cell_id,
                                 tab_type,
+                                client_template,
                                 offset,
                             },
                             "加载更多…",
@@ -1114,7 +1131,7 @@ impl eframe::App for App {
             }
             View::Book => {
                 let Some(book) = self.book.clone() else {
-                    self.view = View::Results;
+                    self.go(View::Results);
                     return;
                 };
                 let mut toggle = false;
@@ -1189,7 +1206,7 @@ impl eframe::App for App {
             }
             View::Series => {
                 let Some(series) = self.series.clone() else {
-                    self.view = View::Results;
+                    self.go(View::Results);
                     return;
                 };
                 let mut play = None;
@@ -1237,7 +1254,7 @@ impl eframe::App for App {
             }
             View::Category => {
                 let Some(front) = self.category.clone() else {
-                    self.view = View::Results;
+                    self.go(View::Results);
                     return;
                 };
                 let mut switch_tab = None;
@@ -1469,7 +1486,7 @@ impl eframe::App for App {
                             }
                         }
                         if ui.button("目录").clicked() {
-                            self.view = View::Book;
+                            self.go(View::Book);
                         }
                         ui.separator();
                         ui.label(
@@ -1530,7 +1547,7 @@ impl eframe::App for App {
                             self.open_chapter(self.chapter_index);
                         }
                         if ui.button("目录").clicked() {
-                            self.view = View::Book;
+                            self.go(View::Book);
                         }
                         let in_shelf = self
                             .book
