@@ -11,7 +11,7 @@ use eframe::egui;
 use egui::{Color32, RichText};
 use fqapp_desktop::{
     add_shelf, category_front, home, init_backend, load_shelf, open_book, open_series,
-    read_chapter, remove_shelf, resolve_episode, search_hits, shelf_contains, update_progress,
+    read_chapter, remove_shelf, resolve_episode, shelf_contains, update_progress,
     CategoryFront, Chapter, Hit, Home, ShelfEntry, Series,
 };
 use tokio::sync::mpsc as tokio_mpsc;
@@ -23,6 +23,7 @@ struct BookInfo {
     author: String,
     summary: String,
     cover: String,
+    is_comic: bool,
 }
 
 enum Cmd {
@@ -60,6 +61,7 @@ enum Msg {
         author: String,
         summary: String,
         cover: String,
+        is_comic: bool,
         chapters: Vec<Chapter>,
     },
     Series(Series),
@@ -105,6 +107,7 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                     author: detail.author,
                     summary: detail.summary,
                     cover: detail.cover,
+                    is_comic: detail.is_comic,
                     chapters: detail.chapters,
                 },
                 Err(err) => Msg::Error(err),
@@ -389,6 +392,7 @@ impl App {
                     author,
                     summary,
                     cover,
+                    is_comic,
                     chapters,
                 } => {
                     self.status = format!("{} · {} 章", title, chapters.len());
@@ -398,6 +402,7 @@ impl App {
                         author,
                         summary,
                         cover,
+                        is_comic,
                     });
                     self.chapters = chapters;
                     self.view = View::Book;
@@ -545,7 +550,13 @@ impl App {
             return;
         };
         self.chapter_index = index;
-        self.send(Cmd::OpenChapter(chapter.item_id), "加载章节…");
+        let is_comic = self.book.as_ref().map(|book| book.is_comic).unwrap_or(false);
+        if is_comic {
+            // A comic chapter is a list of images; asking the text endpoint returns markup.
+            self.send(Cmd::OpenManga(chapter.item_id), "解密漫画…");
+        } else {
+            self.send(Cmd::OpenChapter(chapter.item_id), "加载章节…");
+        }
     }
 
     /// Adds the current book to the shelf, or removes it when it is already there.
@@ -1006,7 +1017,6 @@ impl eframe::App for App {
                 };
                 let mut toggle = false;
                 let mut listen = false;
-                let mut manga = false;
                 egui::SidePanel::right("chapters")
                     .resizable(true)
                     .default_width(320.0)
@@ -1054,23 +1064,16 @@ impl eframe::App for App {
                         ui.label(&book.summary);
                         ui.add_space(14.0);
                         ui.horizontal(|ui| {
-                            if ui
-                                .button(RichText::new("从第一章开始读").size(16.0))
-                                .clicked()
-                            {
+                            let start = if book.is_comic { "从第一话开始看" } else { "从第一章开始读" };
+                            if ui.button(RichText::new(start).size(16.0)).clicked() {
                                 self.open_chapter(0);
                             }
-                            if ui
-                                .button(RichText::new("听书（本章）").size(16.0))
-                                .clicked()
+                            if !book.is_comic
+                                && ui
+                                    .button(RichText::new("听书（本章）").size(16.0))
+                                    .clicked()
                             {
                                 listen = true;
-                            }
-                            if ui
-                                .button(RichText::new("看漫画（首话）").size(16.0))
-                                .clicked()
-                            {
-                                manga = true;
                             }
                         });
                     });
@@ -1080,12 +1083,6 @@ impl eframe::App for App {
                 }
                 if listen {
                     self.play_audio();
-                }
-                if manga {
-                    if let Some(chapter) = self.chapters.first().cloned() {
-                        self.chapter_index = 0;
-                        self.send(Cmd::OpenManga(chapter.item_id), "解密漫画…");
-                    }
                 }
             }
             View::Series => {
@@ -1264,13 +1261,18 @@ impl eframe::App for App {
                         self.build_manga_textures(ctx);
                     }
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        let width = ui.available_width().min(900.0);
-                        for texture in &self.manga_textures {
-                            let size = texture.size_vec2();
-                            let scale = (width / size.x).min(1.0);
-                            ui.image((texture.id(), size * scale));
-                            ui.add_space(6.0);
-                        }
+                        // Cap the column width and centre it, so a maximised window keeps the
+                        // pages in the middle instead of hugging the left edge.
+                        let width = (ui.available_width() - 24.0).min(900.0);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                            ui.set_width(ui.available_width());
+                            for texture in &self.manga_textures {
+                                let size = texture.size_vec2();
+                                let scale = (width / size.x).min(1.0);
+                                ui.add(egui::Image::new((texture.id(), size * scale)));
+                                ui.add_space(6.0);
+                            }
+                        });
                     });
                 });
             }

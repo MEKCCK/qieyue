@@ -122,6 +122,8 @@ pub struct BookDetail {
     pub author: String,
     pub summary: String,
     pub cover: String,
+    /// Comics answer `comic_book_type = 1`; their chapters are images, not text.
+    pub is_comic: bool,
     pub chapters: Vec<Chapter>,
 }
 
@@ -131,6 +133,7 @@ pub async fn open_book(id: &str) -> Result<BookDetail, String> {
     let title = text_of(&data, "book_name");
     let author = text_of(&data, "author");
     let summary = first_non_empty(&[text_of(&data, "abstract"), text_of(&data, "book_abstract_v2")]);
+    let is_comic = text_of(&data, "comic_book_type") == "1";
     let cover = first_non_empty(&[
         text_of(&data, "thumb_url"),
         text_of(&data, "horiz_thumb_url"),
@@ -160,6 +163,7 @@ pub async fn open_book(id: &str) -> Result<BookDetail, String> {
         author,
         summary,
         cover,
+        is_comic,
         chapters,
     })
 }

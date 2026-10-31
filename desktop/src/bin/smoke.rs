@@ -180,6 +180,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  {}: {} 个标签", dim.name, count);
     }
 
+    // Kind detection: a comic must be routed to the image reader, a novel to the text one.
+    println!(
+        "kinds: novel is_comic={} comic is_comic={}",
+        detail.is_comic,
+        fqapp_desktop::open_book("7668179381876968510").await?.is_comic
+    );
+
     // Manga: a comic book's first chapter decrypts to a list of served images.
     let comic = fqapp_desktop::open_book("7668179381876968510").await?;
     if let Some(first_page) = comic.chapters.first() {
