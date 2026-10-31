@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 # rust/ is a pristine copy of ch6vip/fqapp's core: never add code there.
-# Project code lives in desktop/ (GUI) and fqcore/ (headless dev daemon).
+# Project code lives in desktop/ (Tauri v2 shell + ui/) and fqcore/ (headless daemon).
 members = ["rust", "desktop", "fqcore"]
 
 [profile.release]

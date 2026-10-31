@@ -4,7 +4,7 @@
 //! service JSON, so a view never touches `serde_json::Value`.
 
 /// A search hit that is a plain book (novel, audiobook, manga).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Book {
     pub id: String,
     pub title: String,
@@ -12,13 +12,13 @@ pub struct Book {
     pub summary: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Chapter {
     pub item_id: String,
     pub title: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct BookDetail {
     pub title: String,
     pub author: String,
@@ -30,7 +30,7 @@ pub struct BookDetail {
 }
 
 /// One row of the search result list: either a book or a short drama.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Hit {
     pub id: String,
     pub title: String,
@@ -41,13 +41,14 @@ pub struct Hit {
     pub series: Option<String>,
 }
 
+#[derive(serde::Serialize)]
 pub struct SearchPage {
     pub hits: Vec<Hit>,
     /// Offset to request next, or `None` when the service reports no more rows.
     pub next_offset: Option<usize>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Series {
     pub id: String,
     pub title: String,
@@ -56,7 +57,7 @@ pub struct Series {
     pub episodes: Vec<Episode>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Episode {
     pub vid: String,
     pub title: String,
@@ -86,7 +87,7 @@ fn default_kind() -> String {
     "book".to_string()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Comment {
     pub user: String,
     pub text: String,
@@ -95,52 +96,52 @@ pub struct Comment {
     pub replies: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct CategoryTab {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct CategoryDim {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct CategoryTile {
     pub name: String,
     pub dim: String,
     pub hot: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct CategoryFront {
     pub tabs: Vec<CategoryTab>,
     pub dims: Vec<CategoryDim>,
     pub tiles: Vec<CategoryTile>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct RankBoard {
     pub name: String,
     pub algo: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct RankCategory {
     pub name: String,
     pub id: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct RankCatalog {
     pub rank_id: String,
     pub boards: Vec<RankBoard>,
     pub categories: Vec<RankCategory>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct HomeSection {
     pub title: String,
     pub hits: Vec<Hit>,
@@ -152,7 +153,7 @@ pub struct HomeSection {
     pub next_offset: Option<usize>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct HomeTab {
     pub title: String,
     pub tab_type: u32,
@@ -161,7 +162,7 @@ pub struct HomeTab {
     pub client_template: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Home {
     /// Top channels of the discovery page (`推荐`, `小说`, `听书`, …).
     pub tabs: Vec<HomeTab>,

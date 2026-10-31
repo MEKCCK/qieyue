@@ -4,10 +4,11 @@
   <img src="assets/branding/icon-256.png" width="120" alt="茄阅 QieYue">
 </p>
 
-一个**纯 Rust** 的 Linux / macOS 桌面客户端：看小说、看漫画、追短剧、听书。
+一个 **Tauri v2 + 纯 Rust 后端** 的 Linux / macOS 桌面客户端：看小说、看漫画、追短剧、听书。
 
-界面用 `egui`/`eframe` 写，业务逻辑直接复用上游项目的 Rust 核心 `fqapi_core`
-（协议、签名、解密、缓存都在核心里），不依赖 Flutter、Dart、CMake 或任何 WebView。
+界面用 **Tauri v2** 写（系统 WebView + 原生 HTML/CSS/JS），业务逻辑直接复用上游项目的
+Rust 核心 `fqapi_core`（协议、签名、解密、缓存都在核心里）。不依赖 Flutter、Dart、CMake，
+也不需要 Node/npm 或打包 Chromium：macOS 用系统 WKWebView，Linux 用系统 WebKitGTK。
 
 ## 它是什么
 
@@ -15,14 +16,14 @@
 的 **Linux / macOS 桌面移植版**。上游把"内容"和"界面"分得很干净：Rust 核心对外是一组
 `/api/v1/...` 接口，Flutter 只是这些接口的消费者。所以移植没有重写业务，只重写了前端：
 
-    desktop/ (egui)  ──直接调用──▶  fqapi_core (上游 Rust 核心)  ──▶  上游服务
+    desktop/ (Tauri v2 + WebView)  ──IPC──▶  fqapi_core (上游 Rust 核心)  ──▶  上游服务
 
 只支持 Linux 与 macOS；Windows 用上游的 Flutter 客户端。视频与音频交给系统里的 `mpv`
 （含 CENC 解密密钥），不内嵌播放器。
 
 界面是左侧标签式导航：**首页 / 书架 / 排行榜 / 分类**。每个标签有自己的页面栈，
 从书架打开一本书、切到首页再回来，仍停在原来的阅读页；详情、阅读器、漫画和短剧都在
-标签内以页面形式打开。列表按行虚拟化，切标签不会重新加载已有数据。
+标签内以页面形式打开。图片使用原生懒加载，首页区块默认渲染 60 张并可展开；切标签不会重新加载已有数据。
 
 ## 功能
 
@@ -41,7 +42,7 @@
 ## 仓库结构
 
     rust/      上游 Rust 核心（fqapi_core）：协议、签名、解密、缓存
-    desktop/   本项目的界面（egui/eframe），只通过 api::request 调核心
+    desktop/   本项目的界面（Tauri v2 外壳 + ui/ 前端），通过 IPC 调核心
     fqcore/    无界面的核心守护进程，用于单独调试 REST 接口
     assets/    核心用的配置模板与过滤器脚本
     scripts/   构建、编译缓存与上游同步脚本

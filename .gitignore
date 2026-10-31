@@ -16,3 +16,4 @@
 # Packaging output
 /build/
 /dist/
+/desktop/gen/

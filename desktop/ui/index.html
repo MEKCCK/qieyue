@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>茄阅</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand">
+        <img src="assets/logo.png" alt="" draggable="false">
+        <div class="brand-text">
+          <strong>茄阅</strong>
+          <span>QieYue</span>
+        </div>
+      </div>
+      <nav id="tabs" class="tabs" aria-label="主导航"></nav>
+      <div class="rail-footer">
+        <span>v0.1.0</span>
+        <span>Linux · macOS</span>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <button id="back" class="ghost hidden" title="返回">‹ 返回</button>
+        <h1 id="title">首页</h1>
+        <form id="search-form" class="search" autocomplete="off">
+          <input id="search-input" type="search" placeholder="搜索书名 / 作者 / 短剧"
+                 spellcheck="false" autocomplete="off">
+          <button type="submit">搜索</button>
+        </form>
+        <div class="status">
+          <span id="spinner" class="spinner hidden"></span>
+          <span id="status-text"></span>
+        </div>
+      </header>
+      <main id="content" class="content" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>

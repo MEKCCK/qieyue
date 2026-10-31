@@ -56,4 +56,16 @@ if [ "$(uname -s)" = "Darwin" ] && command -v iconutil >/dev/null 2>&1; then
   echo "==> assets/branding/qieyue.icns"
 fi
 
+# Tauri reads icons from `desktop/icons/` and the in-app mark from the
+# frontend's asset directory.
+mkdir -p "$root/desktop/icons" "$root/desktop/ui/assets"
+cp icon-32.png "$root/desktop/icons/32x32.png"
+cp icon-128.png "$root/desktop/icons/128x128.png"
+cp icon-256.png "$root/desktop/icons/128x128@2x.png"
+cp icon-512.png "$root/desktop/icons/icon.png"
+if [ -f qieyue.icns ]; then
+  cp qieyue.icns "$root/desktop/icons/icon.icns"
+fi
+cp icon-128.png "$root/desktop/ui/assets/logo.png"
+
 echo "==> 品牌资源已更新"

@@ -4,22 +4,24 @@
 
 ## 依赖
 
-支持 **Linux** 与 **macOS**，只用到 Rust 工具链和系统里的 mpv，不需要 Flutter / Dart / CMake / ninja：
+支持 **Linux** 与 **macOS**。界面是 Tauri v2 + 系统 WebView，前端为原生 HTML/CSS/JS，
+不需要 Node / npm / Vite，也不需要打包 Chromium。
 
 - `rustc` / `cargo`（stable 即可）
+- Tauri v2 的 WebView 运行时：
+  - macOS：Xcode Command Line Tools（使用系统 WKWebView）
+  - Linux：`webkit2gtk-4.1`、`libgtk-3-dev`、`libsoup-3.0-dev`、`librsvg2-dev`
+    （Debian/Ubuntu 可装 `libwebkit2gtk-4.1-dev build-essential librsvg2-dev`）
 - `mpv`（播放短剧与听书，`--demuxer-lavf-o=decryption_key` 需要 ffmpeg 的 CENC 支持）
   - Linux：`sudo apt install mpv`（或发行版对应命令）
   - macOS：`brew install mpv`
   - 程序会先探测常见的安装路径（含 Homebrew），也可以设置 `QIEYUE_MPV` 指定可执行文件
-- 中文字体：
-  - Linux：`JetBrains Maple Mono`、`Noto Sans CJK` 等
-  - macOS：`PingFang`、`STHeiti`、`Noto Sans CJK` 等
-  - 找不到时会让中文显示为方框，可用 `QIEYUE_CJK_FONT` 指向任意 TTF/TTC 字体
+- 中文字体：使用系统字体（macOS 苹方、Linux Noto Sans CJK 等）
 
 ## 构建
 
 整个仓库是一个 Cargo workspace，三个成员：`rust/`（上游核心 `fqapi_core`，原样副本）、
-`desktop/`（界面）和 `fqcore/`（无界面调试守护进程）。
+`desktop/`（Tauri v2 外壳 + `ui/` 前端）和 `fqcore/`（无界面调试守护进程）。
 
 ```sh
 ./scripts/cargo.sh build --release     # 或加 -p qieyue 只编界面
@@ -35,7 +37,7 @@ release 的 `codegen-units` 也保持默认的 16（crate 内代码生成同样�
 `rust/Cargo.toml` 里的 `[profile.*]` 在 workspace 下会被忽略（cargo 会给出 warning），
 不要把它挪到根 `Cargo.toml`，否则 `codegen-units = 1` 会让代码生成退化为单线程。
 
-产物在 `target/release/`：`qieyue`（界面）、`smoke`（无界面自检）和 `fqcore`（REST 调试守护进程）。
+产物在 `target/release/`：`qieyue`（Tauri 桌面端）、`smoke`（无界面自检）和 `fqcore`（REST 调试守护进程）。
 
 安装到用户目录（Linux / macOS 通用，确保 `~/.local/bin` 在 `PATH` 里）：
 
@@ -47,6 +49,8 @@ install -m 755 target/release/qieyue ~/.local/bin/qieyue
 
 ```sh
 qieyue
+# 开发时也可以直接跑 Cargo
+./scripts/cargo.sh run -p qieyue
 ```
 
 首次运行会生成配置、书架与解密缓存，位置随平台而定：
@@ -72,17 +76,14 @@ qieyue
 它会依次验证：搜索与分页、详情与目录、正文解析、书架增删、短剧集数、视频/音频地址与 CENC 密钥、
 首页各频道的卡片数与翻页、分类、排行榜、漫画解密。
 
-## 演示模式
+## 界面调试
 
-方便截图与排查，用环境变量驱动界面走到指定状态：
+前端是 `desktop/ui/` 里的静态文件，由 Tauri 编译时嵌入二进制。
 
-- `FQAPP_DEMO_QUERY` + `FQAPP_DEMO_STAGE`（1 搜索结果 / 2 详情 / 3 正文）
-- `FQAPP_DEMO_CHANNEL=8:5:12` 切到指定频道（tab_type:tab_index:client_template）
-- `FQAPP_DEMO_MANGA=<book_id>` 直接打开某本漫画第一话
-- `FQAPP_DEMO_SERIES=<series_id>` 直接打开某个短剧
-- `FQAPP_DEMO_VIEW=library|rank|category` 直接进对应页面
-- `QIEYUE_SCREENSHOT=/tmp/ui.png` 在首屏稳定后把窗口帧缓冲写成 PNG 并退出
-  （`QIEYUE_SCREENSHOT_DELAY_MS` 可调等待时间，默认 2500；不需要屏幕录制权限）
+- WebView 里的 JS 异常会通过 `debug_log` 命令转到终端，输出前缀是 `[webview]`；
+  常见启动日志依次是 `boot`、`backend ready`、`home loaded: …`。
+- debug 构建可以打开 WebView 的开发者工具检查 DOM/网络；release 构建不开。
+- 后端数据链路仍用下面的无界面自检验证，不依赖窗口。
 
 ## 品牌资源
 
@@ -91,7 +92,8 @@ qieyue
 - `icon.svg`：应用图标（Linux 图标、窗口图标、应用内标识）
 - `logo.svg`：横版标识（README / 网站）
 
-已提交的 PNG 和 macOS `.icns` 用脚本重新生成：
+已提交的 PNG 和 macOS `.icns` 用脚本重新生成；脚本同时把 Tauri 需要的图标同步到
+`desktop/icons/`，把应用内标识同步到 `desktop/ui/assets/logo.png`：
 
 ```sh
 ./scripts/generate-branding.sh
@@ -103,21 +105,29 @@ macOS 图标会按苹果的图标网格留出透明边距（832/1024），避免
 
 ## 打包
 
-macOS（生成 `build/macos/QieYue.app`，带 Dock 图标）：
+两种方式等价，仓库自带的脚本不依赖 Tauri CLI：
 
-```sh
-./packaging/macos/bundle.sh
-open build/macos/QieYue.app
-```
+1. 用仓库脚本把 Tauri 二进制包成平台产物：
+   - macOS（生成 `build/macos/QieYue.app`，带 Dock 图标）：
+     ```sh
+     ./packaging/macos/bundle.sh
+     open build/macos/QieYue.app
+     ```
+   - Linux（安装到 `~/.local`，需要系统已装 WebKitGTK 运行时）：
+     ```sh
+     ./packaging/linux/install.sh
+     ```
+     系统级安装用 `PREFIX=/usr/local sudo ./packaging/linux/install.sh`。
+2. 用 Tauri 官方打包器：
+   ```sh
+   cargo install tauri-cli --version "^2" --locked   # 只需一次
+   ./scripts/cargo.sh build --release -p qieyue
+   cargo tauri build --config desktop/tauri.conf.json
+   ```
+   生成 `.app`/`.dmg`（macOS）或 `.deb`/AppImage（Linux），图标与版本来自
+   `desktop/tauri.conf.json` 和 `desktop/icons/`。
 
-Linux（安装到 `~/.local`）：
-
-```sh
-./packaging/linux/install.sh
-```
-
-系统级安装用 `PREFIX=/usr/local sudo ./packaging/linux/install.sh`。两个平台的细节见
-[packaging/README](../packaging/README.md)。
+细节见 [packaging/README](../packaging/README.md)。
 
 ## 同步上游
 
@@ -141,6 +151,6 @@ Linux（安装到 `~/.local`）：
 
 ## 已知限制
 
-- 番茄账号导入（书架 / 历史）未实现：上游用内嵌 WebView 登录拿 cookie，纯 Rust 版需要另想办法
+- 番茄账号导入（书架 / 历史）未实现：需要接上游的网页登录与 cookie 导入流程
 - 短剧清晰度切换未接（接口已返回 `variants` 列表）
 - 首页「排行榜」区块只是预览，完整榜单在排行榜页

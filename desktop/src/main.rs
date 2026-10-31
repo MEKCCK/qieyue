@@ -1,53 +1,45 @@
-//! Native Linux / macOS front end for the `fqapi_core` backend.
+//! Tauri v2 entry point.
 //!
-//! The backend owns all protocol, crypto and caching work and exposes a local REST surface
-//! (`/api/v1/...`). This binary links it as a library and drives it through
-//! `fqapi_core::api::request`, so no HTTP server or Flutter runtime is involved. Short dramas
-//! are handed to the system `mpv` together with the CENC key the backend resolves.
+//! The webview frontend lives in `ui/` and is embedded at compile time. Every
+//! backend call is a `#[tauri::command]` in `commands.rs`; the protocol/crypto
+//! work stays in `fqapi_core`, exactly as before.
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-compile_error!("qieyue only supports Linux and macOS");
+mod commands;
 
-mod app;
-mod platform;
-mod theme;
-mod views;
-mod worker;
-
-use std::sync::mpsc::channel;
-
-use eframe::egui;
-
-fn main() -> eframe::Result<()> {
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<worker::Command>();
-    let (msg_tx, msg_rx) = channel::<worker::Reply>();
-
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
-        runtime.block_on(worker::run(cmd_rx, msg_tx));
-    });
-
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 860.0])
-            .with_min_inner_size([980.0, 640.0])
-            .with_title("茄阅")
-            .with_icon(platform::window_icon()),
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "qieyue",
-        options,
-        Box::new(move |cc| {
-            platform::install_fonts(&cc.egui_ctx);
-            theme::install(&cc.egui_ctx);
-            egui_extras::install_image_loaders(&cc.egui_ctx);
-            let logo = platform::load_logo(&cc.egui_ctx);
-            Ok(Box::new(app::App::new(cmd_tx, msg_rx, logo)))
-        }),
-    )
+fn main() {
+    tauri::Builder::default()
+        .setup(|_app| {
+            // Warm the core while the webview paints its first frame. The
+            // frontend also awaits `backend_ready`, which is idempotent.
+            tauri::async_runtime::spawn(async {
+                if let Err(err) = qieyue::init_backend().await {
+                    eprintln!("backend init failed: {err}");
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::backend_ready,
+            commands::debug_log,
+            commands::home,
+            commands::home_channel,
+            commands::home_more,
+            commands::search_page,
+            commands::open_book,
+            commands::read_chapter,
+            commands::open_series,
+            commands::manga_chapter,
+            commands::category_front,
+            commands::rank_catalog,
+            commands::rank_page,
+            commands::book_comments,
+            commands::load_shelf,
+            commands::add_shelf,
+            commands::remove_shelf,
+            commands::update_progress,
+            commands::play_episode,
+            commands::play_audio,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running qieyue");
 }
