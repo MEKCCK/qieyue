@@ -1,6 +1,6 @@
 # 茄阅 · QieYue
 
-一个**纯 Rust** 的 Linux 桌面客户端：看小说、看漫画、追短剧、听书。
+一个**纯 Rust** 的 Linux / macOS 桌面客户端：看小说、看漫画、追短剧、听书。
 
 界面用 `egui`/`eframe` 写，业务逻辑直接复用上游项目的 Rust 核心 `fqapi_core`
 （协议、签名、解密、缓存都在核心里），不依赖 Flutter、Dart、CMake 或任何 WebView。
@@ -8,12 +8,13 @@
 ## 它是什么
 
 茄阅是 [fqapp](https://github.com/ch6vip/fqapp)（Android / Windows 客户端，Flutter UI + 进程内 Rust 核心）
-的 **Linux 桌面移植版**。上游把"内容"和"界面"分得很干净：Rust 核心对外是一组
+的 **Linux / macOS 桌面移植版**。上游把"内容"和"界面"分得很干净：Rust 核心对外是一组
 `/api/v1/...` 接口，Flutter 只是这些接口的消费者。所以移植没有重写业务，只重写了前端：
 
     desktop/ (egui)  ──直接调用──▶  fqapi_core (上游 Rust 核心)  ──▶  上游服务
 
-视频与音频交给系统里的 `mpv`（含 CENC 解密密钥），不内嵌播放器。
+只支持 Linux 与 macOS；Windows 用上游的 Flutter 客户端。视频与音频交给系统里的 `mpv`
+（含 CENC 解密密钥），不内嵌播放器。
 
 ## 功能
 
@@ -33,7 +34,9 @@
 
     rust/      上游 Rust 核心（fqapi_core）：协议、签名、解密、缓存
     desktop/   本项目的界面（egui/eframe），只通过 api::request 调核心
+    fqcore/    无界面的核心守护进程，用于单独调试 REST 接口
     assets/    核心用的配置模板与过滤器脚本
+    scripts/   构建、编译缓存与上游同步脚本
     docs/      构建与维护说明
 
 Flutter、Android、Windows 相关代码全部不在本仓库内。
@@ -41,6 +44,8 @@ Flutter、Android、Windows 相关代码全部不在本仓库内。
 ## 与上游的关系
 
 - 业务逻辑、接口、解密全部来自上游 `rust/` 里的 `fqapi_core`，本仓库没有改动它的协议实现
+- `rust/` 是上游 `rust/` 目录的**原样副本**，任何时候都可以整体替换；
+  用 `./scripts/sync-backend.sh` 同步，`--check` 可确认当前是否一致
 - 界面部分 `desktop/` 是新增的，上游只有 Flutter（Android / Windows）前端
 - 上游 README 保留在 `README.upstream.md`，构建与维护说明见 `docs/Building.md`
 

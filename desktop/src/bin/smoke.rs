@@ -6,7 +6,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     qieyue::init_backend().await?;
     println!("backend ready");
 
-    let query = std::env::args().nth(1).unwrap_or_else(|| "斗破".to_string());
+    let query = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "斗破".to_string());
     let books = qieyue::search(&query).await?;
     println!("search {query:?}: {} hits", books.len());
     for book in books.iter().take(3) {
@@ -34,7 +36,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let (chapter_title, paragraphs) = qieyue::read_chapter(&chapter.item_id).await?;
     let chars: usize = paragraphs.iter().map(|p| p.chars().count()).sum();
-    println!("chapter: {chapter_title} / {} paragraphs / {chars} chars", paragraphs.len());
+    println!(
+        "chapter: {chapter_title} / {} paragraphs / {chars} chars",
+        paragraphs.len()
+    );
     // Same call the GUI makes when a chapter is opened, so the shelf file is exercised too.
     qieyue::remember(qieyue::ShelfEntry {
         id: first.id.clone(),
@@ -66,7 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 !series.cover.is_empty()
             );
             for episode in series.episodes.iter().take(3) {
-                println!("  ep{} {} vid={}", episode.index, episode.title, episode.vid);
+                println!(
+                    "  ep{} {} vid={}",
+                    episode.index, episode.title, episode.vid
+                );
             }
             // Shelf support for dramas: one entry, kind=series, resumable at an episode.
             let entry = qieyue::series_shelf_entry(&series, series.episodes.first());
@@ -78,7 +86,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "series shelf: kind={:?} chapter={:?} cover={}",
                 stored.as_ref().map(|row| row.kind.clone()),
                 stored.as_ref().map(|row| row.chapter_title.clone()),
-                stored.as_ref().map(|row| !row.cover.is_empty()).unwrap_or(false)
+                stored
+                    .as_ref()
+                    .map(|row| !row.cover.is_empty())
+                    .unwrap_or(false)
             );
             qieyue::remove_shelf(&entry.id)?;
 
@@ -215,7 +226,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .iter()
                     .filter(|uri| std::path::Path::new(uri.trim_start_matches("file://")).exists())
                     .count();
-                println!("manga: {}/{} pages on disk ({})", exists, pages.len(), comic.title);
+                println!(
+                    "manga: {}/{} pages on disk ({})",
+                    exists,
+                    pages.len(),
+                    comic.title
+                );
             }
             Err(err) => println!("manga failed: {err}"),
         }
@@ -236,7 +252,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "comments: {} rows / next={next:?} / first={:?}",
         rows.len(),
-        rows.first().map(|row| (row.user.clone(), row.text.chars().take(20).collect::<String>(), row.when.clone()))
+        rows.first().map(|row| (
+            row.user.clone(),
+            row.text.chars().take(20).collect::<String>(),
+            row.when.clone()
+        ))
     );
 
     // Shelf toggle round trip.

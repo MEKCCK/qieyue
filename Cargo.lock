@@ -1492,6 +1492,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fqcore"
+version = "0.1.0"
+dependencies = [
+ "fqapi_core",
+ "tokio",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3155,6 +3163,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "fqapi_core",
+ "futures",
  "image",
  "serde",
  "serde_json",
