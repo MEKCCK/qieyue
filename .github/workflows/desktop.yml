@@ -12,10 +12,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: desktop-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
     name: build (${{ matrix.os }})
@@ -24,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
