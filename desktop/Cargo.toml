@@ -1,12 +1,8 @@
 [package]
-name = "fqapp-desktop"
+name = "qieyue"
 version = "0.1.0"
 edition = "2021"
-description = "Native Linux front end for the fqapi_core backend"
-
-[[bin]]
-name = "qieyue"
-path = "src/main.rs"
+description = "Pure Rust desktop client for the fqapi_core backend"
 
 [dependencies]
 fqapi_core = { path = "../rust" }

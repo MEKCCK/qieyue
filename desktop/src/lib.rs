@@ -21,7 +21,7 @@ pub struct Chapter {
 
 pub async fn init_backend() -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
-    let data = std::path::PathBuf::from(home).join(".local/share/fqapp-desktop");
+    let data = std::path::PathBuf::from(home).join(".local/share/qieyue");
     std::fs::create_dir_all(data.join("run")).map_err(|e| format!("create data dir: {e}"))?;
 
     let config = data.join("config.json");
@@ -483,7 +483,7 @@ pub fn series_shelf_entry(series: &Series, progress: Option<&Episode>) -> ShelfE
 
 pub fn data_dir() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(home).join(".local/share/fqapp-desktop")
+    std::path::PathBuf::from(home).join(".local/share/qieyue")
 }
 
 pub fn load_shelf() -> Vec<ShelfEntry> {

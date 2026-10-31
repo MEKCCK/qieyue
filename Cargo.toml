@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["rust", "desktop"]
+
+[profile.release]
+# The core does a lot of small JSON and crypto work; LTO pays for itself.
+lto = "thin"

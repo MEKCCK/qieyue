@@ -3,11 +3,11 @@
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    fqapp_desktop::init_backend().await?;
+    qieyue::init_backend().await?;
     println!("backend ready");
 
     let query = std::env::args().nth(1).unwrap_or_else(|| "斗破".to_string());
-    let books = fqapp_desktop::search(&query).await?;
+    let books = qieyue::search(&query).await?;
     println!("search {query:?}: {} hits", books.len());
     for book in books.iter().take(3) {
         println!("  {} | {} | id={}", book.title, book.author, book.id);
@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
-    let detail = fqapp_desktop::open_book(&first.id).await?;
+    let detail = qieyue::open_book(&first.id).await?;
     let (title, author, summary) = (detail.title, detail.author, detail.summary);
     let chapters = detail.chapters;
     println!("cover: {}", !detail.cover.is_empty());
@@ -32,11 +32,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("no chapters, stopping");
         return Ok(());
     };
-    let (chapter_title, paragraphs) = fqapp_desktop::read_chapter(&chapter.item_id).await?;
+    let (chapter_title, paragraphs) = qieyue::read_chapter(&chapter.item_id).await?;
     let chars: usize = paragraphs.iter().map(|p| p.chars().count()).sum();
     println!("chapter: {chapter_title} / {} paragraphs / {chars} chars", paragraphs.len());
     // Same call the GUI makes when a chapter is opened, so the shelf file is exercised too.
-    fqapp_desktop::remember(fqapp_desktop::ShelfEntry {
+    qieyue::remember(qieyue::ShelfEntry {
         id: first.id.clone(),
         title: title.clone(),
         author: author.clone(),
@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chapter_title: chapter_title.clone(),
         index: 0,
     })?;
-    println!("shelf: {} entries", fqapp_desktop::load_shelf().len());
+    println!("shelf: {} entries", qieyue::load_shelf().len());
 
     for paragraph in paragraphs.iter().take(2) {
         println!("  {:?}", paragraph.chars().take(60).collect::<String>());
@@ -54,11 +54,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Short dramas: search hits carry the series id, episodes come from the series endpoint and
     // each one resolves to a downloaded file plus the CENC key mpv needs.
-    let hits = fqapp_desktop::search_hits("总裁").await?;
+    let hits = qieyue::search_hits("总裁").await?;
     let series_id = hits.iter().find_map(|hit| hit.series.clone());
     match series_id {
         Some(id) => {
-            let series = fqapp_desktop::open_series(&id).await?;
+            let series = qieyue::open_series(&id).await?;
             println!(
                 "series: {} / {} episodes / cover {}",
                 series.title,
@@ -69,9 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  ep{} {} vid={}", episode.index, episode.title, episode.vid);
             }
             // Shelf support for dramas: one entry, kind=series, resumable at an episode.
-            let entry = fqapp_desktop::series_shelf_entry(&series, series.episodes.first());
-            fqapp_desktop::add_shelf(entry.clone())?;
-            let stored = fqapp_desktop::load_shelf()
+            let entry = qieyue::series_shelf_entry(&series, series.episodes.first());
+            qieyue::add_shelf(entry.clone())?;
+            let stored = qieyue::load_shelf()
                 .into_iter()
                 .find(|row| row.id == entry.id);
             println!(
@@ -80,10 +80,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 stored.as_ref().map(|row| row.chapter_title.clone()),
                 stored.as_ref().map(|row| !row.cover.is_empty()).unwrap_or(false)
             );
-            fqapp_desktop::remove_shelf(&entry.id)?;
+            qieyue::remove_shelf(&entry.id)?;
 
             if let Some(episode) = series.episodes.first() {
-                let (path, key) = fqapp_desktop::resolve_episode(&episode.vid).await?;
+                let (path, key) = qieyue::resolve_episode(&episode.vid).await?;
                 let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 println!("resolved: {path} ({size} bytes) key={} chars", key.len());
             }
@@ -92,8 +92,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Search paging: the second page must add rows, not repeat the first.
-    let page_one = fqapp_desktop::search_page("斗破", 0, None).await?;
-    let page_two = fqapp_desktop::search_page("斗破", 10, None).await?;
+    let page_one = qieyue::search_page("斗破", 0, None).await?;
+    let page_two = qieyue::search_page("斗破", 10, None).await?;
     let overlap = page_two
         .hits
         .iter()
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Home feed: tabs plus the recommendation blocks of the first tab.
-    let front_home = fqapp_desktop::home().await?;
+    let front_home = qieyue::home().await?;
     let total: usize = front_home.sections.iter().map(|s| s.hits.len()).sum();
     println!(
         "home: {} tabs / {} sections / {} cards",
@@ -132,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(section) => {
             let before = section.hits.len();
             let next = section.next_offset.unwrap_or(0);
-            let (more, after) = fqapp_desktop::home_more(
+            let (more, after) = qieyue::home_more(
                 &section.cell_id,
                 section.tab_type,
                 &section.client_template,
@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("channel {label}: not in the channel list");
             continue;
         };
-        match fqapp_desktop::home_channel(tab.tab_type, tab.index, &tab.client_template).await {
+        match qieyue::home_channel(tab.tab_type, tab.index, &tab.client_template).await {
             Ok(channel) => {
                 let cards: usize = channel.sections.iter().map(|s| s.hits.len()).sum();
                 let cover = channel
@@ -181,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Categories: channels, dimensions and the tile counts per dimension.
-    let front = fqapp_desktop::category_front(1).await?;
+    let front = qieyue::category_front(1).await?;
     println!(
         "category: {} tabs ({}) / {} dims / {} tiles",
         front.tabs.len(),
@@ -203,13 +203,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "kinds: novel is_comic={} comic is_comic={}",
         detail.is_comic,
-        fqapp_desktop::open_book("7668179381876968510").await?.is_comic
+        qieyue::open_book("7668179381876968510").await?.is_comic
     );
 
     // Manga: a comic book's first chapter decrypts to a list of served images.
-    let comic = fqapp_desktop::open_book("7668179381876968510").await?;
+    let comic = qieyue::open_book("7668179381876968510").await?;
     if let Some(first_page) = comic.chapters.first() {
-        match fqapp_desktop::manga_chapter(&first_page.item_id).await {
+        match qieyue::manga_chapter(&first_page.item_id).await {
             Ok(pages) => {
                 let exists = pages
                     .iter()
@@ -222,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Audiobook: resolve one chapter to a stream URL plus its CENC key.
-    match fqapp_desktop::audio_for_chapter(&first.id, &chapter.item_id).await {
+    match qieyue::audio_for_chapter(&first.id, &chapter.item_id).await {
         Ok((url, key, tone)) => println!(
             "audio: tone={tone} key={} url={}",
             if key.is_empty() { "none" } else { "16-byte" },
@@ -232,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Comments: first page for a book and for a short drama.
-    let (rows, next) = fqapp_desktop::book_comments("7542602438201576472", 0).await?;
+    let (rows, next) = qieyue::book_comments("7542602438201576472", 0).await?;
     println!(
         "comments: {} rows / next={next:?} / first={:?}",
         rows.len(),
@@ -240,7 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Shelf toggle round trip.
-    let entry = fqapp_desktop::ShelfEntry {
+    let entry = qieyue::ShelfEntry {
         id: "test-book".to_string(),
         title: "测试".to_string(),
         author: String::new(),
@@ -250,10 +250,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chapter_title: String::new(),
         index: 0,
     };
-    let added = fqapp_desktop::add_shelf(entry)?;
-    let present = fqapp_desktop::shelf_contains("test-book");
-    fqapp_desktop::remove_shelf("test-book")?;
-    let gone = !fqapp_desktop::shelf_contains("test-book");
+    let added = qieyue::add_shelf(entry)?;
+    let present = qieyue::shelf_contains("test-book");
+    qieyue::remove_shelf("test-book")?;
+    let gone = !qieyue::shelf_contains("test-book");
     println!("shelf toggle: added={added} present={present} removed={gone}");
 
     Ok(())

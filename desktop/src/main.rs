@@ -9,7 +9,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 
 use eframe::egui;
 use egui::{Color32, RichText};
-use fqapp_desktop::{
+use qieyue::{
     add_shelf, category_front, home, init_backend, load_shelf, open_book, open_series,
     read_chapter, remove_shelf, resolve_episode, shelf_contains, update_progress,
     CategoryFront, Chapter, Hit, Home, ShelfEntry, Series,
@@ -76,10 +76,10 @@ enum Msg {
     Played(String),
     Category(CategoryFront),
     Home(Home),
-    RankCatalog(fqapp_desktop::RankCatalog),
+    RankCatalog(qieyue::RankCatalog),
     RankPage { hits: Vec<Hit>, append: bool },
     HomeMoreFailed { section: usize },
-    Comments { rows: Vec<fqapp_desktop::Comment>, next: Option<usize>, append: bool },
+    Comments { rows: Vec<qieyue::Comment>, next: Option<usize>, append: bool },
     Manga { pages: Vec<String> },
     HomeAppend {
         section: usize,
@@ -99,7 +99,7 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
     while let Some(cmd) = cmds.recv().await {
         let message = match cmd {
             Cmd::Search { query, offset } => {
-                match fqapp_desktop::search_page(&query, offset, None).await {
+                match qieyue::search_page(&query, offset, None).await {
                     Ok(page) => Msg::Hits {
                         hits: page.hits,
                         next: page.next_offset,
@@ -138,19 +138,19 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 book_id,
                 item_id,
                 title,
-            } => match fqapp_desktop::audio_for_chapter(&book_id, &item_id).await {
+            } => match qieyue::audio_for_chapter(&book_id, &item_id).await {
                 Ok((url, key, tone)) => match spawn_mpv_audio(&url, &key, &title) {
                     Ok(()) => Msg::Played(format!("mpv 正在朗读: {title}（音色 {tone}）")),
                     Err(err) => Msg::Error(err),
                 },
                 Err(err) => Msg::Error(err),
             },
-            Cmd::OpenManga(item_id) => match fqapp_desktop::manga_chapter(&item_id).await {
+            Cmd::OpenManga(item_id) => match qieyue::manga_chapter(&item_id).await {
                 Ok(pages) => Msg::Manga { pages },
                 Err(err) => Msg::Error(err),
             },
             Cmd::Comments { book_id, offset } => {
-                match fqapp_desktop::book_comments(&book_id, offset).await {
+                match qieyue::book_comments(&book_id, offset).await {
                     Ok((rows, next)) => Msg::Comments {
                         rows,
                         next,
@@ -159,7 +159,7 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                     Err(err) => Msg::Error(err),
                 }
             }
-            Cmd::RankCatalog => match fqapp_desktop::rank_catalog().await {
+            Cmd::RankCatalog => match qieyue::rank_catalog().await {
                 Ok(catalog) => Msg::RankCatalog(catalog),
                 Err(err) => Msg::Error(err),
             },
@@ -169,7 +169,7 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 category,
                 offset,
             } => {
-                match fqapp_desktop::rank_page(&rank_id, &algo, &category, offset).await {
+                match qieyue::rank_page(&rank_id, &algo, &category, offset).await {
                     Ok(hits) => Msg::RankPage {
                         hits,
                         append: offset > 0,
@@ -185,7 +185,7 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 tab_type,
                 tab_index,
                 client_template,
-            } => match fqapp_desktop::home_channel(tab_type, tab_index, &client_template).await {
+            } => match qieyue::home_channel(tab_type, tab_index, &client_template).await {
                 Ok(home) => Msg::Home(home),
                 Err(err) => Msg::Error(err),
             },
@@ -195,7 +195,7 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 tab_type,
                 client_template,
                 offset,
-            } => match fqapp_desktop::home_more(&cell_id, tab_type, &client_template, offset).await {
+            } => match qieyue::home_more(&cell_id, tab_type, &client_template, offset).await {
                 Ok((hits, next)) => Msg::HomeAppend {
                     section,
                     hits,
@@ -322,13 +322,13 @@ struct App {
     paragraphs: Vec<String>,
     reader_pos: f32,
     series: Option<Series>,
-    rank: Option<fqapp_desktop::RankCatalog>,
+    rank: Option<qieyue::RankCatalog>,
     rank_id: String,
     rank_algo: String,
     rank_category: String,
     rank_hits: Vec<Hit>,
     rank_more: bool,
-    comments: Vec<fqapp_desktop::Comment>,
+    comments: Vec<qieyue::Comment>,
     comments_next: Option<usize>,
     manga_pages: Vec<String>,
     manga_textures: Vec<egui::TextureHandle>,
@@ -722,7 +722,7 @@ impl App {
                 Err(err) => err,
             };
         } else {
-            let entry = fqapp_desktop::series_shelf_entry(&series, series.episodes.first());
+            let entry = qieyue::series_shelf_entry(&series, series.episodes.first());
             self.status = match add_shelf(entry) {
                 Ok(_) => "已加入书架".to_string(),
                 Err(err) => err,
@@ -1477,12 +1477,12 @@ impl eframe::App for App {
                     ui.separator();
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         // Groups follow `rule.dim`; tiles whose dimension is unknown land in 其他.
-                        let mut groups: Vec<(String, Vec<&fqapp_desktop::CategoryTile>)> = Vec::new();
+                        let mut groups: Vec<(String, Vec<&qieyue::CategoryTile>)> = Vec::new();
                         for dim in &front.dims {
                             if dim.value == "0" {
                                 continue;
                             }
-                            let tiles: Vec<&fqapp_desktop::CategoryTile> = front
+                            let tiles: Vec<&qieyue::CategoryTile> = front
                                 .tiles
                                 .iter()
                                 .filter(|tile| tile.dim == dim.value)
@@ -1493,7 +1493,7 @@ impl eframe::App for App {
                         }
                         let known: Vec<&str> =
                             front.dims.iter().map(|dim| dim.value.as_str()).collect();
-                        let rest: Vec<&fqapp_desktop::CategoryTile> = front
+                        let rest: Vec<&qieyue::CategoryTile> = front
                             .tiles
                             .iter()
                             .filter(|tile| !known.contains(&tile.dim.as_str()) || tile.dim == "0")
