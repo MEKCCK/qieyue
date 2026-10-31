@@ -221,6 +221,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Audiobook: resolve one chapter to a stream URL plus its CENC key.
+    match fqapp_desktop::audio_for_chapter(&first.id, &chapter.item_id).await {
+        Ok((url, key, tone)) => println!(
+            "audio: tone={tone} key={} url={}",
+            if key.is_empty() { "none" } else { "16-byte" },
+            &url[..url.len().min(50)]
+        ),
+        Err(err) => println!("audio failed: {err}"),
+    }
+
     // Comments: first page for a book and for a short drama.
     let (rows, next) = fqapp_desktop::book_comments("7542602438201576472", 0).await?;
     println!(
