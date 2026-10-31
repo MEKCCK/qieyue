@@ -10,8 +10,9 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use eframe::egui;
 use egui::{Color32, RichText};
 use fqapp_desktop::{
-    init_backend, load_shelf, open_book, open_series, read_chapter, remember, resolve_episode,
-    search_hits, Chapter, Hit, ShelfEntry, Series,
+    add_shelf, category_front, init_backend, load_shelf, open_book, open_series, read_chapter,
+    remove_shelf, resolve_episode, search_hits, shelf_contains, update_progress, CategoryFront,
+    Chapter, Hit, ShelfEntry, Series,
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -29,6 +30,7 @@ enum Cmd {
     OpenSeries(String),
     OpenChapter(String),
     PlayEpisode { vid: String, title: String },
+    Category(u32),
 }
 
 enum Msg {
@@ -46,6 +48,7 @@ enum Msg {
         paragraphs: Vec<String>,
     },
     Played(String),
+    Category(CategoryFront),
     Error(String),
 }
 
@@ -78,6 +81,10 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
             },
             Cmd::OpenChapter(item_id) => match read_chapter(&item_id).await {
                 Ok((title, paragraphs)) => Msg::Chapter { title, paragraphs },
+                Err(err) => Msg::Error(err),
+            },
+            Cmd::Category(tab) => match category_front(tab).await {
+                Ok(front) => Msg::Category(front),
                 Err(err) => Msg::Error(err),
             },
             Cmd::PlayEpisode { vid, title } => match resolve_episode(&vid).await {
@@ -148,6 +155,7 @@ enum View {
     Book,
     Series,
     Reader,
+    Category,
 }
 
 struct App {
@@ -166,6 +174,8 @@ struct App {
     paragraphs: Vec<String>,
     reader_pos: f32,
     series: Option<Series>,
+    category: Option<CategoryFront>,
+    category_tab: u32,
     shelf: Vec<ShelfEntry>,
     /// Set when a shelf entry is opened: the chapter to jump to once the directory arrives.
     pending_item: Option<String>,
@@ -194,6 +204,8 @@ impl App {
             paragraphs: Vec::new(),
             reader_pos: 0.0,
             series: None,
+            category: None,
+            category_tab: 1,
             shelf: load_shelf(),
             pending_item: None,
             demo: std::env::var("FQAPP_DEMO_QUERY").ok().map(|query| {
@@ -266,22 +278,30 @@ impl App {
                         self.chapter_index + 1,
                         self.chapters.len().max(1)
                     );
+                    // Only books already on the shelf get their position updated; adding is an
+                    // explicit action on the detail page or in the reader toolbar.
                     if let Some(book) = self.book.clone() {
-                        if let Some(chapter) = self.chapters.get(self.chapter_index).cloned() {
-                            let entry = ShelfEntry {
-                                id: book.id,
-                                title: book.title,
-                                author: book.author,
-                                item_id: chapter.item_id,
-                                chapter_title: title,
-                                index: self.chapter_index,
-                            };
-                            match remember(entry) {
-                                Ok(()) => self.shelf = load_shelf(),
-                                Err(err) => eprintln!("save shelf: {err}"),
+                        if shelf_contains(&book.id) {
+                            if let Some(chapter) = self.chapters.get(self.chapter_index).cloned() {
+                                update_progress(
+                                    &book.id,
+                                    &chapter.item_id,
+                                    &title,
+                                    self.chapter_index,
+                                );
+                                self.shelf = load_shelf();
                             }
                         }
                     }
+                }
+                Msg::Category(front) => {
+                    self.status = format!(
+                        "{} 个标签 · {} 个频道",
+                        front.tiles.len(),
+                        front.tabs.len()
+                    );
+                    self.category = Some(front);
+                    self.view = View::Category;
                 }
                 Msg::Played(text) => self.status = text,
                 Msg::Error(err) => self.status = err,
@@ -324,6 +344,39 @@ impl App {
         self.send(Cmd::OpenChapter(chapter.item_id), "加载章节…");
     }
 
+    /// Adds the current book to the shelf, or removes it when it is already there.
+    fn toggle_shelf(&mut self) {
+        let Some(book) = self.book.clone() else {
+            self.status = "先打开一本书".to_string();
+            return;
+        };
+        if shelf_contains(&book.id) {
+            self.status = match remove_shelf(&book.id) {
+                Ok(()) => "已移出书架".to_string(),
+                Err(err) => err,
+            };
+        } else {
+            let (item_id, chapter_title) = self
+                .chapters
+                .get(self.chapter_index)
+                .map(|chapter| (chapter.item_id.clone(), chapter.title.clone()))
+                .unwrap_or_default();
+            let entry = ShelfEntry {
+                id: book.id.clone(),
+                title: book.title.clone(),
+                author: book.author.clone(),
+                item_id,
+                chapter_title,
+                index: self.chapter_index,
+            };
+            self.status = match add_shelf(entry) {
+                Ok(_) => "已加入书架".to_string(),
+                Err(err) => err,
+            };
+        }
+        self.shelf = load_shelf();
+    }
+
     fn open_shelf_entry(&mut self, entry: ShelfEntry) {
         self.pending_item = Some(entry.item_id);
         self.send(Cmd::OpenBook(entry.id), "加载目录…");
@@ -362,6 +415,10 @@ impl eframe::App for App {
                     let query = self.query.trim().to_string();
                     self.send(Cmd::Search(query), "搜索中…");
                 }
+                if ui.button("分类").clicked() {
+                    let tab = self.category_tab;
+                    self.send(Cmd::Category(tab), "加载分类…");
+                }
                 if self.view != View::Empty && ui.button("返回").clicked() {
                     self.view = match self.view {
                         View::Reader => View::Book,
@@ -388,21 +445,33 @@ impl eframe::App for App {
                     ui.label(RichText::new("书架").strong());
                     ui.separator();
                     let mut open = None;
+                    let mut remove = None;
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for entry in &self.shelf {
                             let label = format!("{}\n{}", entry.title, entry.chapter_title);
-                            if ui
-                                .add(
-                                    egui::Label::new(RichText::new(label).size(13.0))
-                                        .sense(egui::Sense::click()),
-                                )
-                                .clicked()
-                            {
-                                open = Some(entry.clone());
-                            }
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(
+                                        egui::Label::new(RichText::new(label).size(13.0))
+                                            .sense(egui::Sense::click()),
+                                    )
+                                    .clicked()
+                                {
+                                    open = Some(entry.clone());
+                                }
+                                if ui.small_button("✕").on_hover_text("移出书架").clicked() {
+                                    remove = Some(entry.id.clone());
+                                }
+                            });
                             ui.separator();
                         }
                     });
+                    if let Some(id) = remove {
+                        if let Err(err) = remove_shelf(&id) {
+                            eprintln!("remove shelf: {err}");
+                        }
+                        self.shelf = load_shelf();
+                    }
                     if let Some(entry) = open {
                         self.open_shelf_entry(entry);
                     }
@@ -475,6 +544,7 @@ impl eframe::App for App {
                     self.view = View::Results;
                     return;
                 };
+                let mut toggle = false;
                 egui::SidePanel::right("chapters")
                     .resizable(true)
                     .default_width(320.0)
@@ -504,7 +574,15 @@ impl eframe::App for App {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.add_space(8.0);
                         ui.label(RichText::new(&book.title).size(24.0).strong());
-                        ui.label(RichText::new(&book.author).color(Color32::GRAY));
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&book.author).color(Color32::GRAY));
+                            ui.separator();
+                            let in_shelf = shelf_contains(&book.id);
+                            let label = if in_shelf { "已在书架（点击移出）" } else { "加入书架" };
+                            if ui.button(label).clicked() {
+                                toggle = true;
+                            }
+                        });
                         ui.add_space(10.0);
                         ui.label(&book.summary);
                         ui.add_space(14.0);
@@ -516,6 +594,9 @@ impl eframe::App for App {
                         }
                     });
                 });
+                if toggle {
+                    self.toggle_shelf();
+                }
             }
             View::Series => {
                 let Some(series) = self.series.clone() else {
@@ -565,7 +646,87 @@ impl eframe::App for App {
                     self.send(Cmd::PlayEpisode { vid, title }, "解析视频地址…");
                 }
             }
+            View::Category => {
+                let Some(front) = self.category.clone() else {
+                    self.view = View::Results;
+                    return;
+                };
+                let mut switch_tab = None;
+                let mut search_tag = None;
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("频道").strong());
+                        for tab in &front.tabs {
+                            let value: u32 = tab.value.parse().unwrap_or(1);
+                            let selected = self.category_tab == value;
+                            if ui
+                                .selectable_label(selected, RichText::new(&tab.name).size(15.0))
+                                .clicked()
+                                && !selected
+                            {
+                                switch_tab = Some(value);
+                            }
+                        }
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        // Groups follow `rule.dim`; tiles whose dimension is unknown land in 其他.
+                        let mut groups: Vec<(String, Vec<&fqapp_desktop::CategoryTile>)> = Vec::new();
+                        for dim in &front.dims {
+                            if dim.value == "0" {
+                                continue;
+                            }
+                            let tiles: Vec<&fqapp_desktop::CategoryTile> = front
+                                .tiles
+                                .iter()
+                                .filter(|tile| tile.dim == dim.value)
+                                .collect();
+                            if !tiles.is_empty() {
+                                groups.push((dim.name.clone(), tiles));
+                            }
+                        }
+                        let known: Vec<&str> =
+                            front.dims.iter().map(|dim| dim.value.as_str()).collect();
+                        let rest: Vec<&fqapp_desktop::CategoryTile> = front
+                            .tiles
+                            .iter()
+                            .filter(|tile| !known.contains(&tile.dim.as_str()) || tile.dim == "0")
+                            .collect();
+                        if !rest.is_empty() {
+                            groups.insert(0, ("全部".to_string(), rest));
+                        }
+
+                        for (name, tiles) in &groups {
+                            ui.add_space(10.0);
+                            ui.label(RichText::new(name).size(12.0).color(Color32::GRAY));
+                            ui.horizontal_wrapped(|ui| {
+                                for tile in tiles {
+                                    let label = if tile.hot {
+                                        format!("🔥 {}", tile.name)
+                                    } else {
+                                        tile.name.clone()
+                                    };
+                                    if ui.button(RichText::new(label).size(14.0)).clicked() {
+                                        search_tag = Some(tile.name.clone());
+                                    }
+                                }
+                            });
+                        }
+                        ui.add_space(20.0);
+                    });
+                });
+                if let Some(tab) = switch_tab {
+                    self.category_tab = tab;
+                    self.send(Cmd::Category(tab), "加载分类…");
+                }
+                if let Some(tag) = search_tag {
+                    self.query = tag.clone();
+                    self.send(Cmd::Search(tag), "搜索中…");
+                }
+            }
             View::Reader => {
+                let mut toggle = false;
                 egui::TopBottomPanel::bottom("reader_nav").show(ctx, |ui| {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -588,6 +749,17 @@ impl eframe::App for App {
                         }
                         if ui.button("目录").clicked() {
                             self.view = View::Book;
+                        }
+                        let in_shelf = self
+                            .book
+                            .as_ref()
+                            .map(|book| shelf_contains(&book.id))
+                            .unwrap_or(false);
+                        if ui
+                            .button(if in_shelf { "已在书架" } else { "加入书架" })
+                            .clicked()
+                        {
+                            toggle = true;
                         }
                         ui.separator();
                         ui.label(RichText::new(&self.chapter_title).color(Color32::GRAY));
@@ -613,6 +785,9 @@ impl eframe::App for App {
                     });
                     self.reader_pos = output.state.offset.y;
                 });
+                if toggle {
+                    self.toggle_shelf();
+                }
             }
         }
     }

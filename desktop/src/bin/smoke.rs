@@ -72,5 +72,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => println!("no short drama in search hits"),
     }
 
+    // Categories: channels, dimensions and the tile counts per dimension.
+    let front = fqapp_desktop::category_front(1).await?;
+    println!(
+        "category: {} tabs ({}) / {} dims / {} tiles",
+        front.tabs.len(),
+        front
+            .tabs
+            .iter()
+            .map(|tab| tab.name.clone())
+            .collect::<Vec<_>>()
+            .join("、"),
+        front.dims.len(),
+        front.tiles.len()
+    );
+    for dim in front.dims.iter().skip(1) {
+        let count = front.tiles.iter().filter(|t| t.dim == dim.value).count();
+        println!("  {}: {} 个标签", dim.name, count);
+    }
+
+    // Shelf toggle round trip.
+    let entry = fqapp_desktop::ShelfEntry {
+        id: "test-book".to_string(),
+        title: "测试".to_string(),
+        author: String::new(),
+        item_id: String::new(),
+        chapter_title: String::new(),
+        index: 0,
+    };
+    let added = fqapp_desktop::add_shelf(entry)?;
+    let present = fqapp_desktop::shelf_contains("test-book");
+    fqapp_desktop::remove_shelf("test-book")?;
+    let gone = !fqapp_desktop::shelf_contains("test-book");
+    println!("shelf toggle: added={added} present={present} removed={gone}");
+
     Ok(())
 }

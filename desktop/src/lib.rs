@@ -484,3 +484,137 @@ pub async fn search_hits(query: &str) -> Result<Vec<Hit>, String> {
     }
     Ok(hits)
 }
+
+// ---------------------------------------------------------------------------------------------
+// categories
+// ---------------------------------------------------------------------------------------------
+
+/// `/api/v1/category` answers with `rule.tab` (channels), `rule.dim` (tag dimensions) and a flat
+/// `down_category[]` of tiles, each carrying the dimension it belongs to.
+#[derive(Clone, Debug)]
+pub struct CategoryTab {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CategoryDim {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CategoryTile {
+    pub name: String,
+    pub dim: String,
+    pub hot: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct CategoryFront {
+    pub tabs: Vec<CategoryTab>,
+    pub dims: Vec<CategoryDim>,
+    pub tiles: Vec<CategoryTile>,
+}
+
+pub async fn category_front(tab: u32) -> Result<CategoryFront, String> {
+    let json = api_get("/api/v1/category", &format!("category_tab={tab}")).await?;
+    let data = json.get("data").cloned().unwrap_or(Value::Null);
+    let rule = data.get("rule").cloned().unwrap_or(Value::Null);
+
+    let mut tabs = Vec::new();
+    for item in rule
+        .get("tab")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = text_of(item, "name");
+        let value = text_of(item, "value");
+        if !name.is_empty() && !value.is_empty() {
+            tabs.push(CategoryTab { name, value });
+        }
+    }
+
+    let mut dims = Vec::new();
+    for item in rule
+        .get("dim")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = text_of(item, "name");
+        if !name.is_empty() {
+            dims.push(CategoryDim {
+                name,
+                value: text_of(item, "value"),
+            });
+        }
+    }
+
+    let mut tiles = Vec::new();
+    for item in data
+        .get("down_category")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = text_of(item, "name");
+        if name.is_empty() {
+            continue;
+        }
+        let tag = item.get("tag");
+        let hot = matches!(tag, Some(Value::Number(n)) if n.as_i64() == Some(1))
+            || matches!(tag, Some(Value::String(s)) if s == "1");
+        tiles.push(CategoryTile {
+            name,
+            dim: text_of(item, "dim"),
+            hot,
+        });
+    }
+
+    Ok(CategoryFront { tabs, dims, tiles })
+}
+
+// ---------------------------------------------------------------------------------------------
+// shelf mutations
+// ---------------------------------------------------------------------------------------------
+
+pub fn shelf_contains(book_id: &str) -> bool {
+    load_shelf().iter().any(|entry| entry.id == book_id)
+}
+
+/// Adds a book (or refreshes the position of one already present) and returns whether it is now
+/// in the shelf.
+pub fn add_shelf(entry: ShelfEntry) -> Result<bool, String> {
+    if shelf_contains(&entry.id) {
+        return Ok(true);
+    }
+    let mut shelf = load_shelf();
+    shelf.retain(|existing| existing.id != entry.id);
+    shelf.insert(0, entry);
+    shelf.truncate(50);
+    save_shelf(&shelf)?;
+    Ok(true)
+}
+
+pub fn remove_shelf(book_id: &str) -> Result<(), String> {
+    let mut shelf = load_shelf();
+    shelf.retain(|entry| entry.id != book_id);
+    save_shelf(&shelf)
+}
+
+/// Reading updates the stored position, but only for books already on the shelf — matching the
+/// original client, where opening a chapter never silently subscribes you to a book.
+pub fn update_progress(book_id: &str, item_id: &str, chapter_title: &str, index: usize) {
+    let mut shelf = load_shelf();
+    let Some(entry) = shelf.iter_mut().find(|entry| entry.id == book_id) else {
+        return;
+    };
+    entry.item_id = item_id.to_string();
+    entry.chapter_title = chapter_title.to_string();
+    entry.index = index;
+    if let Err(err) = save_shelf(&shelf) {
+        eprintln!("update shelf: {err}");
+    }
+}
