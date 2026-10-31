@@ -221,6 +221,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Comments: first page for a book and for a short drama.
+    let (rows, next) = fqapp_desktop::book_comments("7542602438201576472", 0).await?;
+    println!(
+        "comments: {} rows / next={next:?} / first={:?}",
+        rows.len(),
+        rows.first().map(|row| (row.user.clone(), row.text.chars().take(20).collect::<String>(), row.when.clone()))
+    );
+
     // Shelf toggle round trip.
     let entry = fqapp_desktop::ShelfEntry {
         id: "test-book".to_string(),

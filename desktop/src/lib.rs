@@ -1070,6 +1070,30 @@ pub async fn audio_source(
     item_id: &str,
     tone_id: &str,
 ) -> Result<(String, String), String> {
+    // `NO_THIS_TONE` also shows up when the upstream is merely busy, so retry once before
+    // declaring the voice unusable.
+    let mut last_error = String::new();
+    for attempt in 0..3 {
+        match audio_source_once(book_id, item_id, tone_id).await {
+            Ok(found) => return Ok(found),
+            Err(err) => {
+                last_error = err;
+                if attempt < 2 {
+                    // `NO_THIS_TONE` also appears when the upstream is busy; back off and retry.
+                    tokio::time::sleep(std::time::Duration::from_millis(800 * (attempt as u64 + 1)))
+                        .await;
+                }
+            }
+        }
+    }
+    Err(last_error)
+}
+
+async fn audio_source_once(
+    book_id: &str,
+    item_id: &str,
+    tone_id: &str,
+) -> Result<(String, String), String> {
     let tone = if tone_id.trim().is_empty() {
         "0"
     } else {
@@ -1144,46 +1168,148 @@ pub async fn audio_for_chapter(
     book_id: &str,
     item_id: &str,
 ) -> Result<(String, String, String), String> {
-    match audio_source(book_id, item_id, "0").await {
-        Ok((url, key)) => return Ok((url, key, "0".to_string())),
-        Err(err) => {
-            if !err.contains("NO_THIS_TONE") {
-                return Err(err);
+    // Order matters: the default voice first (it is what the original plays), then the book's
+    // 真人讲书 narrators (`abook_id` rows), then tone 1, which some pure-TTS books answer.
+    let mut candidates = vec!["0".to_string()];
+
+    if let Ok(tones) = api_get(&format!("/api/v1/books/{}/tones", url_encode(book_id)), "").await {
+        let data = tones.get("data").cloned().unwrap_or(Value::Null);
+        for row in data
+            .get("audio_tones")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let tone = text_of(row, "abook_id");
+            if !tone.is_empty() && !candidates.contains(&tone) {
+                candidates.push(tone);
             }
         }
-    }
-
-    let tones = api_get(
-        &format!("/api/v1/books/{}/tones", url_encode(book_id)),
-        "",
-    )
-    .await?;
-    let rows = tones
-        .get("data")
-        .and_then(|data| data.get("audio_tones"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-
-    let mut last_error = "没有可用的朗读音色".to_string();
-    for row in rows {
-        let tone = text_of(&row, "abook_id");
-        if tone.is_empty() {
-            continue;
+        let recommended = data
+            .get("recommend_tone")
+            .map(|value| match value {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            })
+            .unwrap_or_default();
+        if !recommended.is_empty() && recommended != "null" && !candidates.contains(&recommended) {
+            candidates.push(recommended);
         }
+    }
+    candidates.push("1".to_string());
+
+    let mut last_error = String::from("没有可用的朗读音色");
+    for tone in candidates {
         match audio_source(book_id, item_id, &tone).await {
             Ok((url, key)) => return Ok((url, key, tone)),
             Err(err) => last_error = err,
         }
     }
-    Err(last_error)
+    Err(format!("朗读失败：{last_error}"))
+}
+
+/// `/api/v1/books/{id}/comments` answers `data.comment[]` (`text`, `user_info.user_name`,
+/// `create_timestamp`, `digg_count`, `reply_count`) plus `has_more`/`next_offset`.
+#[derive(Clone, Debug)]
+pub struct Comment {
+    pub user: String,
+    pub text: String,
+    pub when: String,
+    pub digg: String,
+    pub replies: String,
+}
+
+pub async fn book_comments(
+    book_id: &str,
+    offset: usize,
+) -> Result<(Vec<Comment>, Option<usize>), String> {
+    let mut query = String::from("count=10");
+    if offset > 0 {
+        query.push_str(&format!("&offset={offset}"));
+    }
+    let json = api_get(&format!("/api/v1/books/{}/comments", url_encode(book_id)), &query).await?;
+    parse_comments(json)
+}
+
+/// Short dramas expose their reviews under `/api/v1/series/{id}/comments` with the same rows.
+pub async fn series_comments(
+    series_id: &str,
+    offset: usize,
+) -> Result<(Vec<Comment>, Option<usize>), String> {
+    let mut query = String::from("count=10");
+    if offset > 0 {
+        query.push_str(&format!("&offset={offset}"));
+    }
+    let json = api_get(
+        &format!("/api/v1/series/{}/comments", url_encode(series_id)),
+        &query,
+    )
+    .await?;
+    parse_comments(json)
+}
+
+fn parse_comments(json: Value) -> Result<(Vec<Comment>, Option<usize>), String> {
+    let data = json.get("data").cloned().unwrap_or(Value::Null);
+    let rows = data
+        .get("comment")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut out = Vec::new();
+    for row in rows {
+        let text = text_of(&row, "text");
+        if text.trim().is_empty() {
+            continue;
+        }
+        let user = row
+            .get("user_info")
+            .map(|info| text_of(info, "user_name"))
+            .unwrap_or_default();
+        let stamp = text_of(&row, "create_timestamp");
+        out.push(Comment {
+            user,
+            text,
+            when: format_timestamp(&stamp),
+            digg: text_of(&row, "digg_count"),
+            replies: text_of(&row, "reply_count"),
+        });
+    }
+
+    let has_more = matches!(data.get("has_more"), Some(Value::Bool(true)));
+    let next = if has_more {
+        text_of(&data, "next_offset").parse::<usize>().ok()
+    } else {
+        None
+    };
+    Ok((out, next))
+}
+
+/// `create_timestamp` is seconds; render it as `YYYY-MM-DD` without pulling in a date crate
+/// (days-to-civil, Howard Hinnant's algorithm).
+fn format_timestamp(raw: &str) -> String {
+    let Ok(seconds) = raw.parse::<i64>() else {
+        return String::new();
+    };
+    let days = seconds.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 // ---------------------------------------------------------------------------------------------
 // manga
 // ---------------------------------------------------------------------------------------------
 
-/// Turns a `/src/...` path the backend serves into a `file://` URI egui's image loader can open.
+/// Turns a `/src/...` path the backend serves into a `file://` URI the image loader can read.
 pub fn served_uri(path: &str) -> String {
     if path.starts_with("/src/") {
         let local = data_dir().join("run").join("src").join(&path[5..]);
@@ -1195,17 +1321,14 @@ pub fn served_uri(path: &str) -> String {
     }
 }
 
-/// `/api/v1/manga/{item_id}` decrypts every page of one chapter and answers
-/// `{"images": ["/src/img_...jpg", ...]}`.
+/// `/api/v1/manga/{item_id}` decrypts every page of one chapter into `{"images": ["/src/..."]}`.
 pub async fn manga_chapter(item_id: &str) -> Result<Vec<String>, String> {
     let json = api_get(&format!("/api/v1/manga/{}", url_encode(item_id)), "").await?;
-    let images = json
+    let pages: Vec<String> = json
         .get("images")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let pages: Vec<String> = images
-        .iter()
+        .into_iter()
+        .flatten()
         .filter_map(|value| value.as_str().map(served_uri))
         .collect();
     if pages.is_empty() {
@@ -1240,8 +1363,8 @@ pub struct RankCatalog {
     pub categories: Vec<RankCategory>,
 }
 
-/// The catalogue is not its own endpoint: it rides along in the novel homepage payload, inside
-/// the card that carries `rank_with_category_data`.
+/// The catalogue rides inside the novel homepage payload, in the card that carries
+/// `rank_with_category_data`.
 pub async fn rank_catalog() -> Result<RankCatalog, String> {
     let json = api_get(
         "/api/v1/recommend/homepage",
@@ -1268,10 +1391,7 @@ pub async fn rank_catalog() -> Result<RankCatalog, String> {
             let Some(rank) = cell.get("rank_with_category_data") else {
                 continue;
             };
-            rank_id = first_non_empty(&[
-                text_of(cell, "cell_id_str"),
-                text_of(cell, "cell_id"),
-            ]);
+            rank_id = first_non_empty(&[text_of(cell, "cell_id_str"), text_of(cell, "cell_id")]);
             for entry in rank
                 .get("rank_algo_list")
                 .and_then(Value::as_array)
@@ -1311,8 +1431,8 @@ pub async fn rank_catalog() -> Result<RankCatalog, String> {
     })
 }
 
-/// One page of a board. Rows come either as flat cells with `book_data` or as a group cell that
-/// nests further cells (the 巅峰榜 answers the latter), so both are flattened here.
+/// One page of a board. Rows are either flat cells with `book_data` or a group cell nesting
+/// further cells (巅峰榜 answers the latter).
 pub async fn rank_page(
     rank_id: &str,
     algo: &str,

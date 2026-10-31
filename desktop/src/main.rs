@@ -36,6 +36,7 @@ enum Cmd {
     OpenManga(String),
     Category(u32),
     RankCatalog,
+    Comments { book_id: String, offset: usize },
     RankPage { rank_id: String, algo: String, category: String, offset: usize },
     Home,
     HomeChannel {
@@ -78,6 +79,7 @@ enum Msg {
     RankCatalog(fqapp_desktop::RankCatalog),
     RankPage { hits: Vec<Hit>, append: bool },
     HomeMoreFailed { section: usize },
+    Comments { rows: Vec<fqapp_desktop::Comment>, next: Option<usize>, append: bool },
     Manga { pages: Vec<String> },
     HomeAppend {
         section: usize,
@@ -147,6 +149,16 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 Ok(pages) => Msg::Manga { pages },
                 Err(err) => Msg::Error(err),
             },
+            Cmd::Comments { book_id, offset } => {
+                match fqapp_desktop::book_comments(&book_id, offset).await {
+                    Ok((rows, next)) => Msg::Comments {
+                        rows,
+                        next,
+                        append: offset > 0,
+                    },
+                    Err(err) => Msg::Error(err),
+                }
+            }
             Cmd::RankCatalog => match fqapp_desktop::rank_catalog().await {
                 Ok(catalog) => Msg::RankCatalog(catalog),
                 Err(err) => Msg::Error(err),
@@ -316,15 +328,19 @@ struct App {
     rank_category: String,
     rank_hits: Vec<Hit>,
     rank_more: bool,
+    comments: Vec<fqapp_desktop::Comment>,
+    comments_next: Option<usize>,
     manga_pages: Vec<String>,
     manga_textures: Vec<egui::TextureHandle>,
     manga_pos: f32,
     home: Option<Home>,
     home_tab_index: u32,
     home_loading_more: bool,
-    /// When the user last scrolled; auto-paging only reacts to a recent gesture, never to a
-    /// restored scroll offset.
-    last_scroll: std::time::Instant,
+    /// Scroll offsets from the previous frame, per list. Auto-paging triggers on a change, so a
+    /// restored offset or a first layout pass never starts paging on its own.
+    home_offset: f32,
+    results_offset: f32,
+    rank_offset: f32,
     home_requested: bool,
     category: Option<CategoryFront>,
     category_tab: u32,
@@ -369,13 +385,17 @@ impl App {
             rank_category: "0".to_string(),
             rank_hits: Vec::new(),
             rank_more: true,
+            comments: Vec::new(),
+            comments_next: None,
             manga_pages: Vec::new(),
             manga_textures: Vec::new(),
             manga_pos: 0.0,
             home: None,
             home_tab_index: 0,
             home_loading_more: false,
-            last_scroll: std::time::Instant::now() - std::time::Duration::from_secs(3600),
+            home_offset: -1.0,
+            results_offset: -1.0,
+            rank_offset: -1.0,
             home_requested: false,
             category: None,
             category_tab: 1,
@@ -470,6 +490,12 @@ impl App {
                         is_comic,
                     });
                     self.chapters = chapters;
+                    self.comments.clear();
+                    self.comments_next = None;
+                    if !is_comic {
+                        let book_id = self.book.as_ref().map(|b| b.id.clone()).unwrap_or_default();
+                        self.send(Cmd::Comments { book_id, offset: 0 }, "加载评论…");
+                    }
                     self.go(View::Book);
                     if self.demo_manga_stage == 0 {
                         if let Ok(series_id) = std::env::var("FQAPP_DEMO_SERIES") {
@@ -629,6 +655,18 @@ impl App {
                     }
                     self.home_loading_more = false;
                     self.status = "这个区块到底了".to_string();
+                }
+                Msg::Comments {
+                    rows,
+                    next,
+                    append,
+                } => {
+                    if append {
+                        self.comments.extend(rows);
+                    } else {
+                        self.comments = rows;
+                    }
+                    self.comments_next = next;
                 }
                 Msg::Played(text) => self.status = text,
                 Msg::Error(err) => {
@@ -819,10 +857,7 @@ impl eframe::App for App {
         // Auto-paging must follow a real scroll gesture. egui restores the scroll offset of a
         // ScrollArea between frames, so "the offset is near the bottom" is true even when the
         // user has not touched anything — that is what made the home page page forever.
-        if ctx.input(|i| i.raw_scroll_delta.y.abs() > 0.5) {
-            self.last_scroll = std::time::Instant::now();
-        }
-        let scrolled_now = self.last_scroll.elapsed() < std::time::Duration::from_millis(600);
+
         // egui only redraws on input by default; without this the result of an in-flight
         // request can sit in the channel forever because nothing wakes the event loop.
         if self.loading || self.home.is_none() {
@@ -1020,10 +1055,12 @@ impl eframe::App for App {
                     // Guard against the "content shorter than the viewport" case: there the sum
                     // is always past the threshold and the view would page forever.
                     let scrollable = output.content_size.y > output.inner_rect.height() + 32.0;
-                    at_bottom = scrolled_now
+                    let offset = output.state.offset.y;
+                    let moved = self.home_offset >= 0.0 && (offset - self.home_offset).abs() > 1.0;
+                    self.home_offset = offset;
+                    at_bottom = moved
                         && scrollable
-                        && output.state.offset.y + output.inner_rect.height()
-                            >= output.content_size.y - 200.0;
+                        && offset + output.inner_rect.height() >= output.content_size.y - 300.0;
                 });
 
                 if load_more.is_none() && at_bottom {
@@ -1128,10 +1165,13 @@ impl eframe::App for App {
                     });
                     if self.search_next.is_some() {
                         let scrollable = output.content_size.y > output.inner_rect.height() + 32.0;
-                        if scrolled_now
+                        let offset = output.state.offset.y;
+                        let moved =
+                            self.results_offset >= 0.0 && (offset - self.results_offset).abs() > 1.0;
+                        self.results_offset = offset;
+                        if moved
                             && scrollable
-                            && output.state.offset.y + output.inner_rect.height()
-                                >= output.content_size.y - 200.0
+                            && offset + output.inner_rect.height() >= output.content_size.y - 300.0
                         {
                             load_more = true;
                         }
@@ -1216,6 +1256,7 @@ impl eframe::App for App {
                 };
                 let mut toggle = false;
                 let mut listen = false;
+                let mut load_comments: Option<usize> = None;
                 egui::SidePanel::right("chapters")
                     .resizable(true)
                     .default_width(320.0)
@@ -1282,6 +1323,10 @@ impl eframe::App for App {
                 }
                 if listen {
                     self.play_audio();
+                }
+                if let Some(offset) = load_comments {
+                    let book_id = self.book.as_ref().map(|b| b.id.clone()).unwrap_or_default();
+                    self.send(Cmd::Comments { book_id, offset }, "加载评论…");
                 }
             }
             View::Series => {
@@ -1533,11 +1578,13 @@ impl eframe::App for App {
                         }
                     });
                     let scrollable = output.content_size.y > output.inner_rect.height() + 32.0;
+                    let offset = output.state.offset.y;
+                    let moved = self.rank_offset >= 0.0 && (offset - self.rank_offset).abs() > 1.0;
+                    self.rank_offset = offset;
                     if self.rank_more
-                        && scrolled_now
+                        && moved
                         && scrollable
-                        && output.state.offset.y + output.inner_rect.height()
-                            >= output.content_size.y - 200.0
+                        && offset + output.inner_rect.height() >= output.content_size.y - 300.0
                     {
                         load_more = true;
                     }
