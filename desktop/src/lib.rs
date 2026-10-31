@@ -260,3 +260,227 @@ fn decode_entities(input: &str) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------------------------
+// short dramas (短剧)
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct Series {
+    pub id: String,
+    pub title: String,
+    pub intro: String,
+    pub cover: String,
+    pub episodes: Vec<Episode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Episode {
+    pub vid: String,
+    pub title: String,
+    pub index: usize,
+    pub cover: String,
+    pub duration: String,
+}
+
+/// Every search hit that carries a `video_data` entry is a short drama; the id we need for
+/// the series endpoint is `series_id`, not the `book_id` the hit also carries.
+pub fn series_from_hit(value: &Value) -> Option<(String, String, String)> {
+    let first = value.get("video_data")?.as_array()?.first()?;
+    let id = text_of(first, "series_id");
+    let title = first_non_empty(&[
+        text_of(first, "raw_book_name"),
+        text_of(first, "series_title"),
+        text_of(first, "title"),
+    ]);
+    let cover = first_non_empty(&[text_of(first, "cover"), text_of(first, "horiz_cover")]);
+    if id.is_empty() {
+        None
+    } else {
+        Some((id, title, cover))
+    }
+}
+
+pub async fn open_series(id: &str) -> Result<Series, String> {
+    let json = api_get(&format!("/api/v1/series/{}", url_encode(id)), "").await?;
+    let data = json
+        .get("data")
+        .and_then(|d| d.get("video_data"))
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    let title = text_of(&data, "series_title");
+    let intro = text_of(&data, "series_intro");
+    let cover = text_of(&data, "series_cover");
+
+    let mut episodes = Vec::new();
+    if let Some(list) = data.get("video_list").and_then(Value::as_array) {
+        for (index, item) in list.iter().enumerate() {
+            let vid = text_of(item, "vid");
+            if vid.is_empty() {
+                continue;
+            }
+            // On short dramas this field often carries the whole series synopsis instead of an
+            // episode name; fall back to the index so the list stays readable.
+            let raw_title = text_of(item, "title");
+            let title = if raw_title.chars().count() > 24 {
+                String::new()
+            } else {
+                raw_title
+            };
+            episodes.push(Episode {
+                vid,
+                title,
+                index: index + 1,
+                cover: text_of(item, "episode_cover"),
+                duration: text_of(item, "duration"),
+            });
+        }
+    }
+
+    Ok(Series {
+        id: id.to_string(),
+        title,
+        intro,
+        cover,
+        episodes,
+    })
+}
+
+/// Resolves an episode to something mpv can actually open.
+///
+/// The default mode asks the backend to download the episode; what lands on disk is still CENC
+/// encrypted, so the returned key is required as well (`decryption_key`). The stream mode is the
+/// only place that exposes the key, hence the second round trip.
+pub async fn resolve_episode(vid: &str) -> Result<(String, String), String> {
+    let download = api_get(&format!("/api/v1/videos/{}", url_encode(vid)), "").await?;
+    let served = text_of(&download, "video_url");
+    if served.is_empty() {
+        return Err("后端没有返回视频地址".to_string());
+    }
+
+    let stream = api_get(
+        &format!("/api/v1/videos/{}", url_encode(vid)),
+        "mode=stream",
+    )
+    .await?;
+    let key = text_of(&stream, "key_hex");
+
+    // `/src/foo.mp4` is served from `<data>/run/src/foo.mp4`.
+    let local = if let Some(relative) = served.strip_prefix("/src/") {
+        data_dir().join("run").join("src").join(relative)
+    } else {
+        std::path::PathBuf::from(served)
+    };
+
+    if !local.exists() {
+        return Err(format!("视频文件不在预期位置: {}", local.display()));
+    }
+    Ok((local.display().to_string(), key))
+}
+
+// ---------------------------------------------------------------------------------------------
+// shelf and reading progress
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ShelfEntry {
+    pub id: String,
+    pub title: String,
+    pub author: String,
+    pub item_id: String,
+    pub chapter_title: String,
+    pub index: usize,
+}
+
+pub fn data_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join(".local/share/fqapp-desktop")
+}
+
+pub fn load_shelf() -> Vec<ShelfEntry> {
+    let path = data_dir().join("shelf.json");
+    std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_shelf(entries: &[ShelfEntry]) -> Result<(), String> {
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec_pretty(entries).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("shelf.json"), bytes).map_err(|e| e.to_string())
+}
+
+/// Records the reading position of a book, moving it to the front of the shelf.
+pub fn remember(entry: ShelfEntry) -> Result<(), String> {
+    let mut shelf = load_shelf();
+    shelf.retain(|existing| existing.id != entry.id);
+    shelf.insert(0, entry);
+    shelf.truncate(50);
+    save_shelf(&shelf)
+}
+
+/// One row of the search result list: either a book (novel, audiobook, manga) or a short drama.
+#[derive(Clone, Debug)]
+pub struct Hit {
+    pub id: String,
+    pub title: String,
+    pub author: String,
+    pub summary: String,
+    pub cover: String,
+    /// `Some(series_id)` marks a short drama; `id` is then the series id as well.
+    pub series: Option<String>,
+}
+
+pub async fn search_hits(query: &str) -> Result<Vec<Hit>, String> {
+    let json = api_get("/api/v1/search", &format!("query={}", url_encode(query))).await?;
+    let mut hits: Vec<Hit> = Vec::new();
+    let tabs = json.get("search_tabs").and_then(Value::as_array);
+
+    for tab in tabs.into_iter().flatten() {
+        for item in tab.get("data").and_then(Value::as_array).into_iter().flatten() {
+            if let Some((series_id, title, cover)) = series_from_hit(item) {
+                if hits.iter().any(|hit| hit.id == series_id) {
+                    continue;
+                }
+                hits.push(Hit {
+                    id: series_id.clone(),
+                    title,
+                    author: String::new(),
+                    summary: String::new(),
+                    cover,
+                    series: Some(series_id),
+                });
+                continue;
+            }
+
+            for book in item
+                .get("book_data")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let id = text_of(book, "book_id");
+                if id.is_empty() || hits.iter().any(|hit| hit.id == id) {
+                    continue;
+                }
+                hits.push(Hit {
+                    id,
+                    title: text_of(book, "book_name"),
+                    author: text_of(book, "author"),
+                    summary: first_non_empty(&[
+                        text_of(book, "abstract"),
+                        text_of(book, "book_abstract_v2"),
+                    ]),
+                    cover: first_non_empty(&[
+                        text_of(book, "thumb_url"),
+                        text_of(book, "horiz_thumb_url"),
+                    ]),
+                    series: None,
+                });
+            }
+        }
+    }
+    Ok(hits)
+}
