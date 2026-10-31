@@ -77,6 +77,8 @@ const state = {
   homeLoadingMore: false,
   searchLoadingMore: false,
   rankLoadingMore: false,
+  homeChannelLoading: false,
+  homeChannelSeq: 0,
   userScrolled: false,
   lastAutoPage: 0,
 };
@@ -313,18 +315,40 @@ function loadHome() {
 }
 
 function loadHomeChannel(tabType, index, template) {
+  // Move the highlight immediately and show a channel-local loading state.
+  // The channel bar stays interactive, so a second click simply supersedes.
+  const seq = ++state.homeChannelSeq;
+  state.homeTabIndex = index;
+  state.homeChannelLoading = true;
+  state.userScrolled = false;
+  render();
+  logDebug(`channel requested: tab_type=${tabType} index=${index} template=${template}`);
   setStatus('加载频道…');
   call('home', () => invoke('home_channel', {
     tab_type: tabType, tab_index: index, client_template: template,
   }), {
     onOk: (home) => {
       state.home = home;
-      state.homeTabIndex = index;
+      // The service's tab_index is authoritative; using the clicked index can
+      // highlight a different tab when the channel list is reordered.
+      state.homeTabIndex = Number.isInteger(home.active) ? home.active : index;
+      state.homeChannelLoading = false;
       for (const section of home.sections) section._visible = 60;
       setStatus(`${home.sections.length} 个推荐区块`);
+      logDebug(`channel loaded: requested=${index} active=${home.active} sections=${home.sections.length}`);
       render();
     },
-    onErr: toast,
+    onErr: (message) => {
+      logDebug(`channel failed: ${message}`);
+      toast(message);
+    },
+    onFinally: () => {
+      // Only the newest channel request may clear the loading state.
+      if (state.homeChannelSeq === seq) {
+        state.homeChannelLoading = false;
+        if (state.view === 'home') render();
+      }
+    },
   });
 }
 
@@ -733,6 +757,10 @@ function render(opts = {}) {
   else content.scrollTop = keep;
 
   updateBusy();
+  if (state.view === 'home') {
+    const active = document.querySelector('.home-channels .channel.active');
+    if (active) active.scrollIntoView({ block: 'nearest', inline: 'center' });
+  }
 }
 
 function cardHitAttrs(hit) {
@@ -830,13 +858,19 @@ function updateCommentsMore() {
 function renderHome() {
   if (!state.home) return loadingScreen('加载首页…');
   const channels = state.home.tabs.map((tab) => `
-    <button class="channel ${tab.index === state.homeTabIndex ? 'active' : ''}"
+    <button type="button" role="tab" aria-selected="${tab.index === state.homeTabIndex}"
+      class="channel ${tab.index === state.homeTabIndex ? 'active' : ''}"
       data-action="channel" data-tab-type="${tab.tab_type}" data-index="${tab.index}"
       data-template="${esc(tab.client_template)}">${esc(tab.title)}</button>`).join('');
 
+  const bar = `<div class="channels home-channels" role="tablist" aria-label="首页频道">${channels}</div>`;
+  if (state.homeChannelLoading) {
+    const active = state.home.tabs.find((tab) => tab.index === state.homeTabIndex);
+    return `${bar}<div class="loading-screen" style="padding:90px 0"><span class="spinner"></span><span>正在加载「${esc(active?.title || '频道')}」…</span></div>`;
+  }
   const sections = state.home.sections.map(renderHomeSection).join('');
   const more = `<div class="more-wrap" id="home-more-wrap">${homeMoreButton()}</div>`;
-  return `<div class="channels">${channels}</div>${sections || '<div class="empty">这个频道暂时没有内容</div>'}${more}`;
+  return `${bar}${sections || '<div class="empty">这个频道暂时没有内容</div>'}${more}`;
 }
 
 function renderHomeSection(section, index) {
@@ -1102,6 +1136,7 @@ function bindEvents() {
           .catch((err) => toast(errorText(err)));
         break;
       case 'channel':
+        logDebug(`channel click: ${element.dataset.tabType}/${element.dataset.index}/${element.dataset.template}`);
         loadHomeChannel(Number(element.dataset.tabType), Number(element.dataset.index), element.dataset.template);
         break;
       case 'home-more':

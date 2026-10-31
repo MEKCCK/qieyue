@@ -18,14 +18,16 @@
         "minHeight": 640,
         "center": true,
         "resizable": true,
-        "theme": "Dark"
+        "theme": "Light"
       }
     ],
     "security": {
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$DATA/qieyue/**"]
+        "scope": [
+          "$DATA/qieyue/**"
+        ]
       }
     }
   },
