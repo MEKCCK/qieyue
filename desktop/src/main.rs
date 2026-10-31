@@ -25,17 +25,26 @@ struct BookInfo {
 }
 
 enum Cmd {
-    Search(String),
+    Search { query: String, offset: usize },
     OpenBook(String),
     OpenSeries(String),
     OpenChapter(String),
     PlayEpisode { vid: String, title: String },
     Category(u32),
     Home,
+    HomeChannel {
+        tab_type: u32,
+        tab_index: u32,
+        client_template: String,
+    },
 }
 
 enum Msg {
-    Hits(Vec<Hit>),
+    Hits {
+        hits: Vec<Hit>,
+        next: Option<usize>,
+        append: bool,
+    },
     Detail {
         id: String,
         title: String,
@@ -63,10 +72,16 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
 
     while let Some(cmd) = cmds.recv().await {
         let message = match cmd {
-            Cmd::Search(query) => match search_hits(&query).await {
-                Ok(hits) => Msg::Hits(hits),
-                Err(err) => Msg::Error(err),
-            },
+            Cmd::Search { query, offset } => {
+                match fqapp_desktop::search_page(&query, offset, None).await {
+                    Ok(page) => Msg::Hits {
+                        hits: page.hits,
+                        next: page.next_offset,
+                        append: offset > 0,
+                    },
+                    Err(err) => Msg::Error(err),
+                }
+            }
             Cmd::OpenBook(id) => match open_book(&id).await {
                 Ok((title, author, summary, chapters)) => Msg::Detail {
                     id,
@@ -86,6 +101,14 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 Err(err) => Msg::Error(err),
             },
             Cmd::Home => match home().await {
+                Ok(home) => Msg::Home(home),
+                Err(err) => Msg::Error(err),
+            },
+            Cmd::HomeChannel {
+                tab_type,
+                tab_index,
+                client_template,
+            } => match fqapp_desktop::home_channel(tab_type, tab_index, &client_template).await {
                 Ok(home) => Msg::Home(home),
                 Err(err) => Msg::Error(err),
             },
@@ -174,6 +197,8 @@ struct App {
 
     view: View,
     hits: Vec<Hit>,
+    search_query: String,
+    search_next: Option<usize>,
     book: Option<BookInfo>,
     chapters: Vec<Chapter>,
     chapter_index: usize,
@@ -182,6 +207,7 @@ struct App {
     reader_pos: f32,
     series: Option<Series>,
     home: Option<Home>,
+    home_tab_index: u32,
     home_requested: bool,
     category: Option<CategoryFront>,
     category_tab: u32,
@@ -194,6 +220,8 @@ struct App {
     /// chapter. Stage 1 stops at the result list, 2 at the book page, 3 in the reader.
     demo: Option<(String, u8)>,
     demo_done: u8,
+    /// `FQAPP_DEMO_CHANNEL=5:4:12` switches to that home channel once the first page arrives.
+    demo_channel: Option<(u32, u32, String)>,
 }
 
 impl App {
@@ -206,6 +234,8 @@ impl App {
             loading: false,
             view: View::Empty,
             hits: Vec::new(),
+            search_query: String::new(),
+            search_next: None,
             book: None,
             chapters: Vec::new(),
             chapter_index: 0,
@@ -214,6 +244,7 @@ impl App {
             reader_pos: 0.0,
             series: None,
             home: None,
+            home_tab_index: 0,
             home_requested: false,
             category: None,
             category_tab: 1,
@@ -227,6 +258,13 @@ impl App {
                 (query, stage)
             }),
             demo_done: 0,
+            demo_channel: std::env::var("FQAPP_DEMO_CHANNEL").ok().and_then(|value| {
+                let mut parts = value.split(':');
+                let tab_type = parts.next()?.parse().ok()?;
+                let index = parts.next()?.parse().ok()?;
+                let template = parts.next().unwrap_or("0").to_string();
+                Some((tab_type, index, template))
+            }),
         }
     }
 
@@ -243,11 +281,31 @@ impl App {
         while let Ok(msg) = self.msgs.try_recv() {
             self.loading = false;
             match msg {
-                Msg::Hits(hits) => {
-                    let dramas = hits.iter().filter(|hit| hit.series.is_some()).count();
-                    self.status = format!("{} 条结果（短剧 {}）", hits.len(), dramas);
-                    self.hits = hits;
-                    self.view = View::Results;
+                Msg::Hits { hits, next, append } => {
+                    if append {
+                        for hit in hits {
+                            if !self.hits.iter().any(|existing| existing.id == hit.id) {
+                                self.hits.push(hit);
+                            }
+                        }
+                    } else {
+                        self.hits = hits;
+                    }
+                    self.search_next = next;
+                    let dramas = self.hits.iter().filter(|hit| hit.series.is_some()).count();
+                    self.status = format!(
+                        "{} 条结果（短剧 {}）{}",
+                        self.hits.len(),
+                        dramas,
+                        if self.search_next.is_some() {
+                            " · 继续下滑加载更多"
+                        } else {
+                            ""
+                        }
+                    );
+                    if !append {
+                        self.view = View::Results;
+                    }
                 }
                 Msg::Detail {
                     id,
@@ -315,6 +373,17 @@ impl App {
                     self.view = View::Category;
                 }
                 Msg::Home(home) => {
+                    if let Some((tab_type, tab_index, client_template)) = self.demo_channel.take() {
+                        self.home_tab_index = tab_index;
+                        self.send(
+                            Cmd::HomeChannel {
+                                tab_type,
+                                tab_index,
+                                client_template,
+                            },
+                            "加载频道…",
+                        );
+                    }
                     self.status = format!(
                         "{} 个推荐区块 · {} 张卡片",
                         home.sections.len(),
@@ -335,7 +404,8 @@ impl App {
         };
         if self.demo_done == 0 && !self.loading {
             self.demo_done = 1;
-            self.send(Cmd::Search(query), "搜索中…");
+            self.search_query = query.clone();
+            self.send(Cmd::Search { query, offset: 0 }, "搜索中…");
             return;
         }
         if stage >= 2 && self.demo_done == 1 && self.view == View::Results && !self.loading {
@@ -437,7 +507,14 @@ impl eframe::App for App {
                 let submitted = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if (ui.button("搜索").clicked() || submitted) && !self.query.trim().is_empty() {
                     let query = self.query.trim().to_string();
-                    self.send(Cmd::Search(query), "搜索中…");
+                    self.search_query = query.clone();
+                    self.send(
+                        Cmd::Search {
+                            query,
+                            offset: 0,
+                        },
+                        "搜索中…",
+                    );
                 }
                 if ui.button("首页").clicked() {
                     self.send(Cmd::Home, "加载首页…");
@@ -529,15 +606,26 @@ impl eframe::App for App {
                     return;
                 };
                 let mut clicked: Option<Hit> = None;
+                let mut switch_tab: Option<(u32, u32, String)> = None;
                 egui::CentralPanel::default().show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            for (name, _) in &front.tabs {
-                                ui.label(
-                                    RichText::new(name)
-                                        .size(13.0)
-                                        .color(Color32::from_gray(150)),
-                                );
+                            for tab in &front.tabs {
+                                let selected = tab.index == self.home_tab_index;
+                                if ui
+                                    .selectable_label(
+                                        selected,
+                                        RichText::new(&tab.title).size(14.0),
+                                    )
+                                    .clicked()
+                                    && !selected
+                                {
+                                    switch_tab = Some((
+                                        tab.tab_type,
+                                        tab.index,
+                                        tab.client_template.clone(),
+                                    ));
+                                }
                             }
                         });
                         ui.separator();
@@ -571,6 +659,17 @@ impl eframe::App for App {
                         }
                     });
                 });
+                if let Some((tab_type, index, template)) = switch_tab {
+                    self.home_tab_index = index;
+                    self.send(
+                        Cmd::HomeChannel {
+                            tab_type,
+                            tab_index: index,
+                            client_template: template,
+                        },
+                        "加载频道…",
+                    );
+                }
                 if let Some(hit) = clicked {
                     match hit.series {
                         Some(series_id) => self.send(Cmd::OpenSeries(series_id), "加载剧集…"),
@@ -580,8 +679,9 @@ impl eframe::App for App {
             }
             View::Results => {
                 let mut clicked: Option<Hit> = None;
+                let mut load_more = false;
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
+                    let output = egui::ScrollArea::vertical().show(ui, |ui| {
                         for hit in &self.hits {
                             let response = ui
                                 .horizontal(|ui| {
@@ -617,8 +717,28 @@ impl eframe::App for App {
                             }
                             ui.separator();
                         }
+                        // The service pages in tens; keep pulling while the user is at the end.
+                        if self.search_next.is_some() {
+                            ui.add_space(6.0);
+                            if ui.button("加载更多").clicked() {
+                                load_more = true;
+                            }
+                        }
                     });
+                    if self.search_next.is_some() {
+                        let bottom =
+                            output.state.offset.y + output.inner_rect.height();
+                        if bottom >= output.content_size.y - 240.0 {
+                            load_more = true;
+                        }
+                    }
                 });
+                if load_more && !self.loading {
+                    if let Some(offset) = self.search_next {
+                        let query = self.search_query.clone();
+                        self.send(Cmd::Search { query, offset }, "加载更多…");
+                    }
+                }
                 if let Some(hit) = clicked {
                     match hit.series {
                         Some(series_id) => self.send(Cmd::OpenSeries(series_id), "加载剧集…"),
@@ -809,7 +929,8 @@ impl eframe::App for App {
                 }
                 if let Some(tag) = search_tag {
                     self.query = tag.clone();
-                    self.send(Cmd::Search(tag), "搜索中…");
+                    self.search_query = tag.clone();
+                    self.send(Cmd::Search { query: tag, offset: 0 }, "搜索中…");
                 }
             }
             View::Reader => {

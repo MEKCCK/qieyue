@@ -8,7 +8,7 @@ original does more; **todo** = not started.
 
 | Feature | Original | Endpoint(s) | Status |
 | --- | --- | --- | --- |
-| Search | `search_page` | `/api/v1/search`, `/search/suggest`, `/search/hot` | done (basic search); suggest/hot todo |
+| Search | `search_page` | `/api/v1/search`, `/search/suggest`, `/search/hot` | done, with paging (offset/count, auto-load at the end); suggest/hot todo |
 | Book detail + directory | `detail_page` | `/books/{id}/detail`, `/books/{id}/directory` | done |
 | Reader | `reader/` | `/chapters/{item}` | done (scroll, prev/next); themes, fonts, comments anchor todo |
 | Shelf add / remove | `detail_page`, reader toolbar | local `ShelfStore` | done |
@@ -17,14 +17,15 @@ original does more; **todo** = not started.
 | Categories | `category_page` | `/category?category_tab=` | done (channels, dimension groups); tag → book list todo |
 | Short dramas | `drama_page`, `series_detail` | `/videos/{vid}`, `/series/{id}` | done (episode list → mpv) |
 | Quality switching | `player_page` | `variants[]` in the stream response | todo |
-| Home recommendation feed | `home_page`, `home_provider` | `/recommend/channels`, `/recommend/homepage`, `/recommend/series-feed` | partial (channels + first tab's blocks); 猜你喜欢 paging needs `series-feed` |
+| Home recommendation feed | `home_page`, `home_provider` | `/recommend/channels`, `/recommend/homepage`, `/recommend/series-feed` | partial: 11 channels are switchable, blocks resolve through `series-feed`; comic/manga cards still unparsed |
 | Rank boards | `rank_page` | rank catalogue from the novel homepage, `/rank/{id}` | todo |
 | Comics | `comic_reader_page` | `/manga/{id}` | todo |
 | Audiobooks | `audio`, `player`, `audio_listening` | `/audio/books/{id}`, chapter timeline | todo |
 | Comments and danmaku | `detail_page`, `series_detail` | `/books/{id}/comments`, `/series/{id}/comments`, `/videos/{vid}/danmaku` | todo |
 | Authors | `author_page` | `/authors/{id}` | todo |
+| 红果短剧 (Hongguo) | — | — | not supported by the original either |
 | Cached downloads | `cached_books`, `cached_dramas` | `/videos/{vid}` download + `/src/*` | partial (drama download is implicit) |
-| History | `library` | `/account/fanqie/history` | todo |
+| 番茄 account login (import shelf/history) | `desktop_login`, `fanqie_library_import_page` | `/account/fanqie/library`, `/account/fanqie/history` | todo — the original logs in through an embedded webview and imports read-only |
 | Settings: theme, TTS, text replacement | `settings*` | local | todo |
 | Mine / about | `mine_page`, `about_page` | local | todo |
 

@@ -72,6 +72,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => println!("no short drama in search hits"),
     }
 
+    // Search paging: the second page must add rows, not repeat the first.
+    let first = fqapp_desktop::search_page("斗破", 0, None).await?;
+    let second = fqapp_desktop::search_page("斗破", 10, None).await?;
+    let overlap = second
+        .hits
+        .iter()
+        .filter(|hit| first.hits.iter().any(|a| a.id == hit.id))
+        .count();
+    println!(
+        "paging: page1={} page2={} overlap={overlap} next={:?}→{:?}",
+        first.hits.len(),
+        second.hits.len(),
+        first.next_offset,
+        second.next_offset
+    );
+
     // Home feed: tabs plus the recommendation blocks of the first tab.
     let front_home = fqapp_desktop::home().await?;
     let total: usize = front_home.sections.iter().map(|s| s.hits.len()).sum();
@@ -85,6 +101,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  block {}: {} cards", section.title, section.hits.len());
         for hit in section.hits.iter().take(3) {
             println!("    {} | {}", hit.title, hit.author);
+        }
+    }
+
+    // Channel switching: the same page with a different tab_type/tab_index/client_template.
+    for (label, tab_type, index, template) in [
+        ("小说", 25u32, 1u32, "12"),
+        ("听书", 5, 4, "12"),
+        ("漫画", 9, 7, "4"),
+    ] {
+        match fqapp_desktop::home_channel(tab_type, index, template).await {
+            Ok(channel) => {
+                let cards: usize = channel.sections.iter().map(|s| s.hits.len()).sum();
+                println!(
+                    "channel {label}: {} sections / {cards} cards / first={:?}",
+                    channel.sections.len(),
+                    channel.sections.first().map(|s| s.title.clone())
+                );
+            }
+            Err(err) => println!("channel {label}: {err}"),
         }
     }
 
