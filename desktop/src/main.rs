@@ -840,6 +840,7 @@ impl eframe::App for App {
                 let mut clicked: Option<Hit> = None;
                 let mut switch_tab: Option<(u32, u32, String)> = None;
                 let mut load_more: Option<(usize, String, u32, usize)> = None;
+                let mut open_rank = false;
                 let mut at_bottom = false;
 
                 egui::CentralPanel::default().show(ctx, |ui| {
@@ -860,10 +861,19 @@ impl eframe::App for App {
                         ui.separator();
                         for section in &front.sections {
                             ui.add_space(10.0);
-                            ui.label(RichText::new(&section.title).size(17.0).strong());
+                            // The 排行榜 block is only a preview; the real boards live in the rank
+                            // page, so cap the cards and link there instead of pretending paging.
+                            let is_rank = section.title.contains("排行榜");
+                            let visible = if is_rank { 10 } else { section.hits.len() };
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&section.title).size(17.0).strong());
+                                if is_rank && ui.link("查看完整榜单 〉").clicked() {
+                                    open_rank = true;
+                                }
+                            });
                             ui.add_space(6.0);
                             ui.horizontal_wrapped(|ui| {
-                                for hit in &section.hits {
+                                for hit in section.hits.iter().take(visible) {
                                     let card = ui.allocate_ui(egui::vec2(126.0, 214.0), |ui| {
                                         ui.vertical(|ui| {
                                             Self::cover(ui, &hit.cover, egui::vec2(118.0, 158.0));
@@ -935,6 +945,9 @@ impl eframe::App for App {
                             "加载更多…",
                         );
                     }
+                }
+                if open_rank {
+                    self.send(Cmd::RankCatalog, "加载榜单…");
                 }
                 if let Some((tab_type, index, template)) = switch_tab {
                     self.home_tab_index = index;
