@@ -46,8 +46,33 @@ pub async fn init_backend() -> Result<(), String> {
 }
 
 pub async fn api_get(path: &str, query: &str) -> Result<Value, String> {
+    // The upstream throttles bursts: the same request that answers instantly can come back as
+    // an error envelope (or with empty rows) a moment later. One short retry smooths that over.
+    let mut last_error = String::new();
+    for attempt in 0..3 {
+        match api_get_once(path, query).await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                last_error = err;
+                if attempt < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(350 * (attempt + 1))).await;
+                }
+            }
+        }
+    }
+    Err(last_error)
+}
+
+async fn api_get_once(path: &str, query: &str) -> Result<Value, String> {
+    // A fresh request id per call: sharing one (or an empty one) makes the core treat the
+    // requests as the same in-flight call and hand back the earlier response.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let request_id = format!(
+        "desktop-{}",
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     let response = fqapi_core::api::request(
-        String::new(),
+        request_id,
         "GET".to_string(),
         path.to_string(),
         query.to_string(),
@@ -615,7 +640,18 @@ pub async fn home_channel(
         "tab_type={tab_type}&offset=0&tab_index={tab_index}&last_tab_index=-1&client_template={client_template}"
     );
     let json = api_get("/api/v1/recommend/homepage", &query).await?;
-    parse_home(json, tab_index as usize).await
+    let home = parse_home(json.clone(), tab_index as usize).await;
+    if matches!(&home, Ok(home) if home.sections.is_empty()) {
+        // An empty page is what a throttled call looks like; give it one more chance.
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let retry = api_get("/api/v1/recommend/homepage", &query).await?;
+        if let Ok(retry) = parse_home(retry, tab_index as usize).await {
+            if !retry.sections.is_empty() {
+                return Ok(retry);
+            }
+        }
+    }
+    home
 }
 
 pub async fn home() -> Result<Home, String> {
@@ -657,6 +693,8 @@ async fn parse_home(json: Value, active: usize) -> Result<Home, String> {
         {
             let title = text_of(cell, "cell_name");
             let mut hits = Vec::new();
+            // Two shapes: rows under `cell_data`, or a plain `book_data` list when the block is a
+            // single grid of books (the comic channel renders this way).
             for item in cell
                 .get("cell_data")
                 .and_then(Value::as_array)
@@ -668,6 +706,31 @@ async fn parse_home(json: Value, active: usize) -> Result<Home, String> {
                         hits.push(hit);
                     }
                 }
+            }
+            for book in cell
+                .get("book_data")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let id = text_of(book, "book_id");
+                if id.is_empty() || hits.iter().any(|hit| hit.id == id) {
+                    continue;
+                }
+                hits.push(Hit {
+                    id,
+                    title: text_of(book, "book_name"),
+                    author: text_of(book, "author"),
+                    summary: first_non_empty(&[
+                        text_of(book, "abstract"),
+                        text_of(book, "book_abstract_v2"),
+                    ]),
+                    cover: first_non_empty(&[
+                        text_of(book, "thumb_url"),
+                        text_of(book, "horiz_thumb_url"),
+                    ]),
+                    series: None,
+                });
             }
             // Feed blocks arrive as one container item whose own `cell_data` holds the cards.
             let feed_cell = cell
@@ -873,8 +936,16 @@ pub fn update_progress(book_id: &str, item_id: &str, chapter_title: &str, index:
 
 /// Resolves the audio track of one chapter. The service answers with a play-info envelope whose
 /// `data[]` carries `main_url`/`backup_url`; both point at the same mp3/m4a stream.
-pub async fn audio_source(book_id: &str, item_id: &str, tone_id: &str) -> Result<String, String> {
-    let tone = if tone_id.trim().is_empty() { "0" } else { tone_id.trim() };
+pub async fn audio_source(
+    book_id: &str,
+    item_id: &str,
+    tone_id: &str,
+) -> Result<(String, String), String> {
+    let tone = if tone_id.trim().is_empty() {
+        "0"
+    } else {
+        tone_id.trim()
+    };
     let json = api_get(
         &format!(
             "/api/v1/audio/books/{}/chapters/{}",
@@ -886,31 +957,133 @@ pub async fn audio_source(book_id: &str, item_id: &str, tone_id: &str) -> Result
     .await?;
 
     let data = json.get("data").cloned().unwrap_or(Value::Null);
-    let candidates = data
+    let streams = data
         .as_array()
         .cloned()
         .or_else(|| data.get("data").and_then(Value::as_array).cloned())
         .unwrap_or_default();
 
-    for entry in candidates {
-        for key in ["main_url", "backup_url"] {
-            let url = text_of(&entry, key);
-            if url.starts_with("http") {
-                return Ok(url);
+    for stream in &streams {
+        // The playable key lives inside the `video_model` JSON string, under
+        // `video_list[].encrypt_info.key_hex` (`cenc-aes-ctr`). The sibling `encryption_key`
+        // field is key material for the app's own player, not a CENC key.
+        let model = match stream.get("video_model") {
+            Some(Value::String(raw)) => serde_json::from_str::<Value>(raw).ok(),
+            Some(value @ Value::Object(_)) => Some(value.clone()),
+            _ => None,
+        };
+        if let Some(model) = model {
+            for entry in model
+                .get("video_list")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let key = entry
+                    .get("encrypt_info")
+                    .map(|info| text_of(info, "key_hex"))
+                    .unwrap_or_default();
+                let url = first_non_empty(&[
+                    text_of(entry, "main_url"),
+                    text_of(entry, "backup_url"),
+                ]);
+                if url.starts_with("http") {
+                    return Ok((url, key));
+                }
+            }
+        }
+
+        let key = stream
+            .get("encrypt_info")
+            .map(|info| text_of(info, "key_hex"))
+            .unwrap_or_default();
+        let url = first_non_empty(&[
+            text_of(stream, "main_url"),
+            text_of(stream, "backup_url"),
+        ]);
+        if url.starts_with("http") {
+            return Ok((url, key));
+        }
+    }
+
+    Err(format!("没拿到音频地址（{}）", text_of(&json, "message")))
+}
+
+/// Tries the default voice first, then the book's 真人讲书 narrators: a pure-TTS book answers
+/// `NO_THIS_TONE` for tone 0, and only the `abook_id` rows yield audio.
+pub async fn audio_for_chapter(
+    book_id: &str,
+    item_id: &str,
+) -> Result<(String, String, String), String> {
+    match audio_source(book_id, item_id, "0").await {
+        Ok((url, key)) => return Ok((url, key, "0".to_string())),
+        Err(err) => {
+            if !err.contains("NO_THIS_TONE") {
+                return Err(err);
             }
         }
     }
 
-    // Some envelopes nest the play info one level deeper.
-    let flat = json.to_string();
-    if let Some(index) = flat.find("\"main_url\":\"http") {
-        let rest = &flat[index + 12..];
-        if let Some(end) = rest.find('"') {
-            return Ok(rest[..end].to_string());
+    let tones = api_get(
+        &format!("/api/v1/books/{}/tones", url_encode(book_id)),
+        "",
+    )
+    .await?;
+    let rows = tones
+        .get("data")
+        .and_then(|data| data.get("audio_tones"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut last_error = "没有可用的朗读音色".to_string();
+    for row in rows {
+        let tone = text_of(&row, "abook_id");
+        if tone.is_empty() {
+            continue;
+        }
+        match audio_source(book_id, item_id, &tone).await {
+            Ok((url, key)) => return Ok((url, key, tone)),
+            Err(err) => last_error = err,
         }
     }
-    Err(format!(
-        "没拿到音频地址（{}）",
-        text_of(&json, "message")
-    ))
+    Err(last_error)
+}
+
+// ---------------------------------------------------------------------------------------------
+// manga
+// ---------------------------------------------------------------------------------------------
+
+/// Turns a `/src/...` path the backend serves into a `file://` URI egui's image loader can open.
+pub fn served_uri(path: &str) -> String {
+    if path.starts_with("/src/") {
+        let local = data_dir().join("run").join("src").join(&path[5..]);
+        format!("file://{}", local.display())
+    } else if path.starts_with("http") {
+        path.to_string()
+    } else {
+        format!("file://{}", path)
+    }
+}
+
+/// `/api/v1/manga/{item_id}` decrypts every page of one chapter and answers
+/// `{"images": ["/src/img_...jpg", ...]}`.
+pub async fn manga_chapter(item_id: &str) -> Result<Vec<String>, String> {
+    let json = api_get(&format!("/api/v1/manga/{}", url_encode(item_id)), "").await?;
+    let images = json
+        .get("images")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let pages: Vec<String> = images
+        .iter()
+        .filter_map(|value| value.as_str().map(served_uri))
+        .collect();
+    if pages.is_empty() {
+        return Err(format!(
+            "这一话没有图片（{}）",
+            first_non_empty(&[text_of(&json, "error"), text_of(&json, "message")])
+        ));
+    }
+    Ok(pages)
 }

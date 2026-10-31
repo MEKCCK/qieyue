@@ -128,8 +128,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Audiobook: the play-info envelope must yield a stream URL mpv can open.
-    match fqapp_desktop::audio_source(&first.id, &chapter.item_id, "0").await {
-        Ok(url) => println!("audio: {url}"),
+    if let Ok(tones) = fqapp_desktop::api_get("/api/v1/books/7542602438201576472/tones", "").await {
+        let data = tones.get("data").cloned().unwrap_or_default();
+        let rows = data.get("audio_tones").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0);
+        println!("tones probe: code={:?} data_keys={:?} rows={rows}",
+            tones.get("code"), data.as_object().map(|o| o.keys().take(4).cloned().collect::<Vec<_>>()));
+    }
+    match fqapp_desktop::audio_for_chapter(&first.id, &chapter.item_id).await {
+        Ok((url, key, tone)) => println!(
+            "audio: tone={tone} key={} url={}",
+            if key.is_empty() { "none" } else { "16-byte" },
+            &url[..url.len().min(60)]
+        ),
         Err(err) => println!("audio failed: {err}"),
     }
 
@@ -168,6 +178,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for dim in front.dims.iter().skip(1) {
         let count = front.tiles.iter().filter(|t| t.dim == dim.value).count();
         println!("  {}: {} 个标签", dim.name, count);
+    }
+
+    // Manga: a comic book's first chapter decrypts to a list of served images.
+    let comic = fqapp_desktop::open_book("7668179381876968510").await?;
+    if let Some(first_page) = comic.chapters.first() {
+        match fqapp_desktop::manga_chapter(&first_page.item_id).await {
+            Ok(pages) => {
+                let exists = pages
+                    .iter()
+                    .filter(|uri| std::path::Path::new(uri.trim_start_matches("file://")).exists())
+                    .count();
+                println!("manga: {}/{} pages on disk ({})", exists, pages.len(), comic.title);
+            }
+            Err(err) => println!("manga failed: {err}"),
+        }
     }
 
     // Shelf toggle round trip.

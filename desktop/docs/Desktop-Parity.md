@@ -19,12 +19,13 @@ original does more; **todo** = not started.
 | Quality switching | `player_page` | `variants[]` in the stream response | todo |
 | Home recommendation feed | `home_page`, `home_provider` | `/recommend/channels`, `/recommend/homepage`, `/recommend/series-feed` | partial: 11 channels are switchable, blocks resolve through `series-feed`; comic/manga cards still unparsed |
 | Rank boards | `rank_page` | rank catalogue from the novel homepage, `/rank/{id}` | todo |
-| Comics | `comic_reader_page` | `/manga/{id}` | todo |
-| Audiobooks | `audio`, `player`, `audio_listening` | `/audio/books/{id}`, chapter timeline | todo |
+| Comics | `comic_reader_page` | `/manga/{item_id}` | done: pages decrypt to disk and render, 上一话/下一话 |
+| Audiobooks | `audio`, `player`, `audio_listening` | `/audio/books/{id}/chapters/{item}`, `/books/{id}/tones` | partial: the chapter track plays in mpv with its CENC key; player UI/timeline todo |
 | Comments and danmaku | `detail_page`, `series_detail` | `/books/{id}/comments`, `/series/{id}/comments`, `/videos/{vid}/danmaku` | todo |
 | Authors | `author_page` | `/authors/{id}` | todo |
 | 红果短剧 (Hongguo) | — | — | not supported by the original either |
 | Cached downloads | `cached_books`, `cached_dramas` | `/videos/{vid}` download + `/src/*` | partial (drama download is implicit) |
+| Manga channel | `home` 漫画 | `/recommend/homepage` (tab 9) | done: cell `book_data` grid parses |
 | 番茄 account login (import shelf/history) | `desktop_login`, `fanqie_library_import_page` | `/account/fanqie/library`, `/account/fanqie/history` | todo — the original logs in through an embedded webview and imports read-only |
 | Settings: theme, TTS, text replacement | `settings*` | local | todo |
 | Mine / about | `mine_page`, `about_page` | local | todo |

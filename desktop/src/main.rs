@@ -32,6 +32,7 @@ enum Cmd {
     OpenChapter(String),
     PlayEpisode { vid: String, title: String },
     PlayAudio { book_id: String, item_id: String, title: String },
+    OpenManga(String),
     Category(u32),
     Home,
     HomeChannel {
@@ -69,6 +70,7 @@ enum Msg {
     Played(String),
     Category(CategoryFront),
     Home(Home),
+    Manga { pages: Vec<String> },
     HomeAppend {
         section: usize,
         hits: Vec<Hit>,
@@ -119,11 +121,15 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 book_id,
                 item_id,
                 title,
-            } => match fqapp_desktop::audio_source(&book_id, &item_id, "0").await {
-                Ok(url) => match spawn_mpv_audio(&url, &title) {
-                    Ok(()) => Msg::Played(format!("mpv 正在朗读: {title}")),
+            } => match fqapp_desktop::audio_for_chapter(&book_id, &item_id).await {
+                Ok((url, key, tone)) => match spawn_mpv_audio(&url, &key, &title) {
+                    Ok(()) => Msg::Played(format!("mpv 正在朗读: {title}（音色 {tone}）")),
                     Err(err) => Msg::Error(err),
                 },
+                Err(err) => Msg::Error(err),
+            },
+            Cmd::OpenManga(item_id) => match fqapp_desktop::manga_chapter(&item_id).await {
+                Ok(pages) => Msg::Manga { pages },
                 Err(err) => Msg::Error(err),
             },
             Cmd::Home => match home().await {
@@ -169,8 +175,14 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
     }
 }
 
-fn spawn_mpv_audio(url: &str, title: &str) -> Result<(), String> {
-    std::process::Command::new("mpv")
+fn spawn_mpv_audio(url: &str, key: &str, title: &str) -> Result<(), String> {
+    let mut command = std::process::Command::new("mpv");
+    if !key.is_empty() {
+        // Audio tracks are `cenc-aes-ctr` too; without the key mpv reports
+        // "Reserved bit set" and gives up.
+        command.arg(format!("--demuxer-lavf-o=decryption_key={key}"));
+    }
+    command
         .arg("--no-video")
         .arg(format!("--title={title}"))
         .arg(url)
@@ -233,6 +245,7 @@ enum View {
     Empty,
     Home,
     Library,
+    Manga,
     Results,
     Book,
     Series,
@@ -258,6 +271,9 @@ struct App {
     paragraphs: Vec<String>,
     reader_pos: f32,
     series: Option<Series>,
+    manga_pages: Vec<String>,
+    manga_textures: Vec<egui::TextureHandle>,
+    manga_pos: f32,
     home: Option<Home>,
     home_tab_index: u32,
     home_loading_more: bool,
@@ -273,6 +289,8 @@ struct App {
     /// chapter. Stage 1 stops at the result list, 2 at the book page, 3 in the reader.
     demo: Option<(String, u8)>,
     demo_done: u8,
+    /// `FQAPP_DEMO_MANGA=<book id>` opens that comic's first chapter once its detail arrives.
+    demo_manga_stage: u8,
     /// `FQAPP_DEMO_CHANNEL=5:4:12` switches to that home channel once the first page arrives.
     demo_channel: Option<(u32, u32, String)>,
 }
@@ -296,6 +314,9 @@ impl App {
             paragraphs: Vec::new(),
             reader_pos: 0.0,
             series: None,
+            manga_pages: Vec::new(),
+            manga_textures: Vec::new(),
+            manga_pos: 0.0,
             home: None,
             home_tab_index: 0,
             home_loading_more: false,
@@ -312,6 +333,7 @@ impl App {
                 (query, stage)
             }),
             demo_done: 0,
+            demo_manga_stage: 0,
             demo_channel: std::env::var("FQAPP_DEMO_CHANNEL").ok().and_then(|value| {
                 let mut parts = value.split(':');
                 let tab_type = parts.next()?.parse().ok()?;
@@ -379,6 +401,16 @@ impl App {
                     });
                     self.chapters = chapters;
                     self.view = View::Book;
+                    if self.demo_manga_stage == 0 {
+                        if let Ok(book) = std::env::var("FQAPP_DEMO_MANGA") {
+                            if book == self.book.as_ref().map(|b| b.id.clone()).unwrap_or_default() {
+                                if let Some(chapter) = self.chapters.first().cloned() {
+                                    self.demo_manga_stage = 1;
+                                    self.send(Cmd::OpenManga(chapter.item_id), "解密漫画…");
+                                }
+                            }
+                        }
+                    }
                     if let Some(item) = self.pending_item.take() {
                         let index = self
                             .chapters
@@ -466,6 +498,13 @@ impl App {
                         }
                     }
                     self.home_loading_more = false;
+                }
+                Msg::Manga { pages } => {
+                    self.status = format!("{} 页", pages.len());
+                    self.manga_pages = pages;
+                    self.manga_textures.clear();
+                    self.manga_pos = 0.0;
+                    self.view = View::Manga;
                 }
                 Msg::Played(text) => self.status = text,
                 Msg::Error(err) => self.status = err,
@@ -568,6 +607,35 @@ impl App {
         self.send(Cmd::OpenBook(entry.id), "加载目录…");
     }
 
+    /// Decodes the served pages into textures. `egui_extras` cannot open `file://` URIs, so the
+    /// bytes are read and uploaded here, downscaled to a readable width.
+    fn build_manga_textures(&mut self, ctx: &egui::Context) {
+        const MAX_WIDTH: u32 = 900;
+        for (index, uri) in self.manga_pages.iter().enumerate() {
+            let path = uri.trim_start_matches("file://");
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let Ok(image) = image::load_from_memory(&bytes) else {
+                continue;
+            };
+            let scaled = if image.width() > MAX_WIDTH {
+                image.resize(MAX_WIDTH, u32::MAX, image::imageops::FilterType::Triangle)
+            } else {
+                image
+            };
+            let rgba = scaled.to_rgba8();
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            let pixels = rgba.into_raw();
+            let texture = ctx.load_texture(
+                format!("manga-{index}"),
+                egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
+                egui::TextureOptions::LINEAR,
+            );
+            self.manga_textures.push(texture);
+        }
+    }
+
     fn cover(ui: &mut egui::Ui, url: &str, size: egui::Vec2) {
         if url.is_empty() {
             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -584,8 +652,18 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // egui only redraws on input by default; without this the result of an in-flight
+        // request can sit in the channel forever because nothing wakes the event loop.
+        if self.loading || self.home.is_none() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+        }
         self.poll();
-        if let Ok(view) = std::env::var("FQAPP_DEMO_VIEW") {
+        if let Ok(book) = std::env::var("FQAPP_DEMO_MANGA") {
+            if self.demo_manga_stage == 0 && !self.home_requested && !self.loading {
+                self.home_requested = true;
+                self.send(Cmd::OpenBook(book), "打开漫画…");
+            }
+        } else if let Ok(view) = std::env::var("FQAPP_DEMO_VIEW") {
             if self.demo_done == 0 && !self.home_requested {
                 self.home_requested = true;
                 self.view = match view.as_str() {
@@ -928,6 +1006,7 @@ impl eframe::App for App {
                 };
                 let mut toggle = false;
                 let mut listen = false;
+                let mut manga = false;
                 egui::SidePanel::right("chapters")
                     .resizable(true)
                     .default_width(320.0)
@@ -987,6 +1066,12 @@ impl eframe::App for App {
                             {
                                 listen = true;
                             }
+                            if ui
+                                .button(RichText::new("看漫画（首话）").size(16.0))
+                                .clicked()
+                            {
+                                manga = true;
+                            }
                         });
                     });
                 });
@@ -995,6 +1080,12 @@ impl eframe::App for App {
                 }
                 if listen {
                     self.play_audio();
+                }
+                if manga {
+                    if let Some(chapter) = self.chapters.first().cloned() {
+                        self.chapter_index = 0;
+                        self.send(Cmd::OpenManga(chapter.item_id), "解密漫画…");
+                    }
                 }
             }
             View::Series => {
@@ -1124,6 +1215,64 @@ impl eframe::App for App {
                     self.search_query = tag.clone();
                     self.send(Cmd::Search { query: tag, offset: 0 }, "搜索中…");
                 }
+            }
+            View::Manga => {
+                egui::TopBottomPanel::bottom("manga_nav").show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(self.chapter_index > 0, egui::Button::new("上一话"))
+                            .clicked()
+                        {
+                            self.chapter_index -= 1;
+                            if let Some(chapter) = self.chapters.get(self.chapter_index).cloned() {
+                                self.send(Cmd::OpenManga(chapter.item_id), "解密漫画…");
+                            }
+                        }
+                        if ui
+                            .add_enabled(
+                                self.chapter_index + 1 < self.chapters.len(),
+                                egui::Button::new("下一话"),
+                            )
+                            .clicked()
+                        {
+                            self.chapter_index += 1;
+                            if let Some(chapter) = self.chapters.get(self.chapter_index).cloned() {
+                                self.send(Cmd::OpenManga(chapter.item_id), "解密漫画…");
+                            }
+                        }
+                        if ui.button("目录").clicked() {
+                            self.view = View::Book;
+                        }
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!(
+                                "{} · {} 页",
+                                self.chapters
+                                    .get(self.chapter_index)
+                                    .map(|chapter| chapter.title.clone())
+                                    .unwrap_or_default(),
+                                self.manga_pages.len()
+                            ))
+                            .color(Color32::GRAY),
+                        );
+                    });
+                    ui.add_space(4.0);
+                });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if self.manga_textures.is_empty() && !self.manga_pages.is_empty() {
+                        self.build_manga_textures(ctx);
+                    }
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let width = ui.available_width().min(900.0);
+                        for texture in &self.manga_textures {
+                            let size = texture.size_vec2();
+                            let scale = (width / size.x).min(1.0);
+                            ui.image((texture.id(), size * scale));
+                            ui.add_space(6.0);
+                        }
+                    });
+                });
             }
             View::Reader => {
                 let mut toggle = false;
