@@ -10,9 +10,9 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use eframe::egui;
 use egui::{Color32, RichText};
 use fqapp_desktop::{
-    add_shelf, category_front, init_backend, load_shelf, open_book, open_series, read_chapter,
-    remove_shelf, resolve_episode, search_hits, shelf_contains, update_progress, CategoryFront,
-    Chapter, Hit, ShelfEntry, Series,
+    add_shelf, category_front, home, init_backend, load_shelf, open_book, open_series,
+    read_chapter, remove_shelf, resolve_episode, search_hits, shelf_contains, update_progress,
+    CategoryFront, Chapter, Hit, Home, ShelfEntry, Series,
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -31,6 +31,7 @@ enum Cmd {
     OpenChapter(String),
     PlayEpisode { vid: String, title: String },
     Category(u32),
+    Home,
 }
 
 enum Msg {
@@ -49,6 +50,7 @@ enum Msg {
     },
     Played(String),
     Category(CategoryFront),
+    Home(Home),
     Error(String),
 }
 
@@ -81,6 +83,10 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
             },
             Cmd::OpenChapter(item_id) => match read_chapter(&item_id).await {
                 Ok((title, paragraphs)) => Msg::Chapter { title, paragraphs },
+                Err(err) => Msg::Error(err),
+            },
+            Cmd::Home => match home().await {
+                Ok(home) => Msg::Home(home),
                 Err(err) => Msg::Error(err),
             },
             Cmd::Category(tab) => match category_front(tab).await {
@@ -151,6 +157,7 @@ fn install_fonts(ctx: &egui::Context) {
 #[derive(PartialEq)]
 enum View {
     Empty,
+    Home,
     Results,
     Book,
     Series,
@@ -174,6 +181,8 @@ struct App {
     paragraphs: Vec<String>,
     reader_pos: f32,
     series: Option<Series>,
+    home: Option<Home>,
+    home_requested: bool,
     category: Option<CategoryFront>,
     category_tab: u32,
     shelf: Vec<ShelfEntry>,
@@ -204,6 +213,8 @@ impl App {
             paragraphs: Vec::new(),
             reader_pos: 0.0,
             series: None,
+            home: None,
+            home_requested: false,
             category: None,
             category_tab: 1,
             shelf: load_shelf(),
@@ -303,6 +314,15 @@ impl App {
                     self.category = Some(front);
                     self.view = View::Category;
                 }
+                Msg::Home(home) => {
+                    self.status = format!(
+                        "{} 个推荐区块 · {} 张卡片",
+                        home.sections.len(),
+                        home.sections.iter().map(|s| s.hits.len()).sum::<usize>()
+                    );
+                    self.home = Some(home);
+                    self.view = View::Home;
+                }
                 Msg::Played(text) => self.status = text,
                 Msg::Error(err) => self.status = err,
             }
@@ -399,6 +419,10 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        if !self.home_requested && !self.loading {
+            self.home_requested = true;
+            self.send(Cmd::Home, "加载首页…");
+        }
         self.advance_demo();
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -414,6 +438,9 @@ impl eframe::App for App {
                 if (ui.button("搜索").clicked() || submitted) && !self.query.trim().is_empty() {
                     let query = self.query.trim().to_string();
                     self.send(Cmd::Search(query), "搜索中…");
+                }
+                if ui.button("首页").clicked() {
+                    self.send(Cmd::Home, "加载首页…");
                 }
                 if ui.button("分类").clicked() {
                     let tab = self.category_tab;
@@ -490,6 +517,66 @@ impl eframe::App for App {
                         );
                     });
                 });
+            }
+            View::Home => {
+                let Some(front) = self.home.clone() else {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(80.0);
+                            ui.label(RichText::new("加载首页…").color(Color32::GRAY));
+                        });
+                    });
+                    return;
+                };
+                let mut clicked: Option<Hit> = None;
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for (name, _) in &front.tabs {
+                                ui.label(
+                                    RichText::new(name)
+                                        .size(13.0)
+                                        .color(Color32::from_gray(150)),
+                                );
+                            }
+                        });
+                        ui.separator();
+                        for section in &front.sections {
+                            ui.add_space(10.0);
+                            ui.label(RichText::new(&section.title).size(17.0).strong());
+                            ui.add_space(6.0);
+                            ui.horizontal_wrapped(|ui| {
+                                for hit in &section.hits {
+                                    let card = ui.allocate_ui(egui::vec2(126.0, 214.0), |ui| {
+                                        ui.vertical(|ui| {
+                                            Self::cover(ui, &hit.cover, egui::vec2(118.0, 158.0));
+                                            let title: String = hit.title.chars().take(16).collect();
+                                            ui.label(RichText::new(title).size(12.5));
+                                            if !hit.author.is_empty() {
+                                                let author: String =
+                                                    hit.author.chars().take(12).collect();
+                                                ui.label(
+                                                    RichText::new(author)
+                                                        .size(11.0)
+                                                        .color(Color32::GRAY),
+                                                );
+                                            }
+                                        });
+                                    });
+                                    if card.response.interact(egui::Sense::click()).clicked() {
+                                        clicked = Some(hit.clone());
+                                    }
+                                }
+                            });
+                        }
+                    });
+                });
+                if let Some(hit) = clicked {
+                    match hit.series {
+                        Some(series_id) => self.send(Cmd::OpenSeries(series_id), "加载剧集…"),
+                        None => self.send(Cmd::OpenBook(hit.id), "加载目录…"),
+                    }
+                }
             }
             View::Results => {
                 let mut clicked: Option<Hit> = None;

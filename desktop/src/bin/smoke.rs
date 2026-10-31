@@ -72,6 +72,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => println!("no short drama in search hits"),
     }
 
+    // Home feed: tabs plus the recommendation blocks of the first tab.
+    let front_home = fqapp_desktop::home().await?;
+    let total: usize = front_home.sections.iter().map(|s| s.hits.len()).sum();
+    println!(
+        "home: {} tabs / {} sections / {} cards",
+        front_home.tabs.len(),
+        front_home.sections.len(),
+        total
+    );
+    for section in front_home.sections.iter().take(2) {
+        println!("  block {}: {} cards", section.title, section.hits.len());
+        for hit in section.hits.iter().take(3) {
+            println!("    {} | {}", hit.title, hit.author);
+        }
+    }
+
     // Categories: channels, dimensions and the tile counts per dimension.
     let front = fqapp_desktop::category_front(1).await?;
     println!(

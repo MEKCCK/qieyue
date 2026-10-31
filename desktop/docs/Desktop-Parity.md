@@ -17,7 +17,7 @@ original does more; **todo** = not started.
 | Categories | `category_page` | `/category?category_tab=` | done (channels, dimension groups); tag → book list todo |
 | Short dramas | `drama_page`, `series_detail` | `/videos/{vid}`, `/series/{id}` | done (episode list → mpv) |
 | Quality switching | `player_page` | `variants[]` in the stream response | todo |
-| Home recommendation feed | `home_page`, `home_provider` | `/recommend/channels`, `/recommend/homepage`, `/recommend/series-feed` | todo |
+| Home recommendation feed | `home_page`, `home_provider` | `/recommend/channels`, `/recommend/homepage`, `/recommend/series-feed` | partial (channels + first tab's blocks); 猜你喜欢 paging needs `series-feed` |
 | Rank boards | `rank_page` | rank catalogue from the novel homepage, `/rank/{id}` | todo |
 | Comics | `comic_reader_page` | `/manga/{id}` | todo |
 | Audiobooks | `audio`, `player`, `audio_listening` | `/audio/books/{id}`, chapter timeline | todo |
@@ -30,7 +30,8 @@ original does more; **todo** = not started.
 
 ## Order of work
 
-1. Home feed (channels → tab → cells → feed) — also unlocks the rank catalogue.
+1. Home feed: remaining tabs and the `series-feed` blocks (猜你喜欢) — also unlocks the rank
+   catalogue.
 2. Rank boards.
 3. Comic reader (image pages, lazy loading, tap paging).
 4. Audiobook playback (mpv audio + chapter list).

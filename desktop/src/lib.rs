@@ -618,3 +618,108 @@ pub fn update_progress(book_id: &str, item_id: &str, chapter_title: &str, index:
         eprintln!("update shelf: {err}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// home feed
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct HomeSection {
+    pub title: String,
+    pub hits: Vec<Hit>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Home {
+    /// Top channels of the discovery page (`推荐`, `小说`, `听书`, …).
+    pub tabs: Vec<(String, u32)>,
+    pub sections: Vec<HomeSection>,
+}
+
+/// `/api/v1/recommend/homepage` returns `data.tab_item[]`, and each tab carries `cell_data[]`
+/// blocks that hold the actual cards. Only the first tab is requested here: its blocks are the
+/// mixed recommendation feed the original lands on.
+pub async fn home() -> Result<Home, String> {
+    let json = api_get(
+        "/api/v1/recommend/homepage",
+        "tab_type=2&offset=0&tab_index=0&last_tab_index=-1",
+    )
+    .await?;
+    let data = json.get("data").cloned().unwrap_or(Value::Null);
+
+    let mut tabs = Vec::new();
+    let mut sections = Vec::new();
+    for (index, tab) in data
+        .get("tab_item")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let name = text_of(tab, "title");
+        let tab_type: u32 = text_of(tab, "tab_type").parse().unwrap_or(0);
+        if !name.is_empty() {
+            tabs.push((name, tab_type));
+        }
+        if index != 0 {
+            continue;
+        }
+
+        for cell in tab
+            .get("cell_data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let title = text_of(cell, "cell_name");
+            let mut hits = Vec::new();
+            for item in cell
+                .get("cell_data")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(hit) = hit_from_item(item) {
+                    if !hits.iter().any(|existing: &Hit| existing.id == hit.id) {
+                        hits.push(hit);
+                    }
+                }
+            }
+            if !hits.is_empty() {
+                sections.push(HomeSection { title, hits });
+            }
+        }
+    }
+
+    Ok(Home { tabs, sections })
+}
+
+/// One card from a feed cell, search result or shelf row.
+fn hit_from_item(item: &Value) -> Option<Hit> {
+    if let Some((series_id, title, cover)) = series_from_hit(item) {
+        return Some(Hit {
+            id: series_id.clone(),
+            title,
+            author: String::new(),
+            summary: String::new(),
+            cover,
+            series: Some(series_id),
+        });
+    }
+    let book = item.get("book_data")?.as_array()?.first()?;
+    let id = text_of(book, "book_id");
+    if id.is_empty() {
+        return None;
+    }
+    Some(Hit {
+        id,
+        title: text_of(book, "book_name"),
+        author: text_of(book, "author"),
+        summary: first_non_empty(&[text_of(book, "abstract"), text_of(book, "book_abstract_v2")]),
+        cover: first_non_empty(&[
+            text_of(book, "thumb_url"),
+            text_of(book, "horiz_thumb_url"),
+        ]),
+        series: None,
+    })
+}
