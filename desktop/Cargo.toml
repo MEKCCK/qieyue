@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Native Linux front end for the fqapi_core backend"
 
+[[bin]]
+name = "qieyue"
+path = "src/main.rs"
+
 [dependencies]
 fqapi_core = { path = "../rust" }
 eframe = "0.31"
