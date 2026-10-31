@@ -1,0 +1,12 @@
+[package]
+name = "fqapp-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Native Linux front end for the fqapi_core backend"
+
+[dependencies]
+fqapi_core = { path = "../rust" }
+eframe = "0.31"
+egui = "0.31"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
