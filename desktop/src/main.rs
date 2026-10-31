@@ -336,11 +336,6 @@ struct App {
     home: Option<Home>,
     home_tab_index: u32,
     home_loading_more: bool,
-    /// Scroll offsets from the previous frame, per list. Auto-paging triggers on a change, so a
-    /// restored offset or a first layout pass never starts paging on its own.
-    home_offset: f32,
-    results_offset: f32,
-    rank_offset: f32,
     home_requested: bool,
     category: Option<CategoryFront>,
     category_tab: u32,
@@ -393,9 +388,6 @@ impl App {
             home: None,
             home_tab_index: 0,
             home_loading_more: false,
-            home_offset: -1.0,
-            results_offset: -1.0,
-            rank_offset: -1.0,
             home_requested: false,
             category: None,
             category_tab: 1,
@@ -854,6 +846,11 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Mouse wheel / trackpad scrolling this frame. Listening to the input itself matters:
+        // when a list is shorter than the viewport its scroll offset never changes, yet the user
+        // is clearly asking for more content.
+        let wheel_down =
+            ctx.input(|i| i.raw_scroll_delta.y < -1.0 || i.key_pressed(egui::Key::PageDown));
         // Auto-paging must follow a real scroll gesture. egui restores the scroll offset of a
         // ScrollArea between frames, so "the offset is near the bottom" is true even when the
         // user has not touched anything — that is what made the home page page forever.
@@ -1056,11 +1053,9 @@ impl eframe::App for App {
                     // is always past the threshold and the view would page forever.
                     let scrollable = output.content_size.y > output.inner_rect.height() + 32.0;
                     let offset = output.state.offset.y;
-                    let moved = self.home_offset >= 0.0 && (offset - self.home_offset).abs() > 1.0;
-                    self.home_offset = offset;
-                    at_bottom = moved
-                        && scrollable
-                        && offset + output.inner_rect.height() >= output.content_size.y - 300.0;
+                    let near_bottom =
+                        offset + output.inner_rect.height() >= output.content_size.y - 300.0;
+                    at_bottom = wheel_down && (near_bottom || !scrollable);
                 });
 
                 if load_more.is_none() && at_bottom {
@@ -1166,13 +1161,9 @@ impl eframe::App for App {
                     if self.search_next.is_some() {
                         let scrollable = output.content_size.y > output.inner_rect.height() + 32.0;
                         let offset = output.state.offset.y;
-                        let moved =
-                            self.results_offset >= 0.0 && (offset - self.results_offset).abs() > 1.0;
-                        self.results_offset = offset;
-                        if moved
-                            && scrollable
-                            && offset + output.inner_rect.height() >= output.content_size.y - 300.0
-                        {
+                        let near_bottom =
+                            offset + output.inner_rect.height() >= output.content_size.y - 300.0;
+                        if wheel_down && (near_bottom || !scrollable) {
                             load_more = true;
                         }
                     }
@@ -1316,6 +1307,54 @@ impl eframe::App for App {
                                 listen = true;
                             }
                         });
+
+                        ui.add_space(18.0);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("评论").size(16.0).strong());
+                            ui.label(
+                                RichText::new(if self.comments_next.is_some() {
+                                    format!("已加载 {}", self.comments.len())
+                                } else {
+                                    format!("共 {}", self.comments.len())
+                                })
+                                .size(12.0)
+                                .color(Color32::GRAY),
+                            );
+                        });
+                        ui.add_space(6.0);
+                        if self.comments.is_empty() {
+                            ui.label(
+                                RichText::new("还没有评论").size(12.0).color(Color32::GRAY),
+                            );
+                        }
+                        for comment in &self.comments {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(&comment.user)
+                                        .size(13.0)
+                                        .color(Color32::from_rgb(120, 170, 220)),
+                                );
+                                ui.label(
+                                    RichText::new(&comment.when).size(11.0).color(Color32::GRAY),
+                                );
+                            });
+                            ui.label(RichText::new(&comment.text).size(14.0));
+                            ui.label(
+                                RichText::new(format!(
+                                    "赞 {} · 回复 {}",
+                                    comment.digg, comment.replies
+                                ))
+                                .size(11.0)
+                                .color(Color32::GRAY),
+                            );
+                            ui.add_space(10.0);
+                        }
+                        if let Some(next) = self.comments_next {
+                            if ui.button("加载更多评论").clicked() {
+                                load_comments = Some(next);
+                            }
+                        }
                     });
                 });
                 if toggle {
@@ -1579,13 +1618,9 @@ impl eframe::App for App {
                     });
                     let scrollable = output.content_size.y > output.inner_rect.height() + 32.0;
                     let offset = output.state.offset.y;
-                    let moved = self.rank_offset >= 0.0 && (offset - self.rank_offset).abs() > 1.0;
-                    self.rank_offset = offset;
-                    if self.rank_more
-                        && moved
-                        && scrollable
-                        && offset + output.inner_rect.height() >= output.content_size.y - 300.0
-                    {
+                    let near_bottom =
+                        offset + output.inner_rect.height() >= output.content_size.y - 300.0;
+                    if self.rank_more && wheel_down && (near_bottom || !scrollable) {
                         load_more = true;
                     }
                 });
