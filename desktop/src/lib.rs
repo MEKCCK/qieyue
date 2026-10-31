@@ -544,12 +544,39 @@ pub async fn series_feed_page(
     tab_type: u32,
     offset: usize,
 ) -> Result<(Vec<Hit>, Option<usize>), String> {
-    let query = format!(
-        "cell_id={cell_id}&tab_type={tab_type}&client_template=2&client_req_type=2&offset={offset}\
-         &unlimited_selector_change_type={}",
-        if offset == 0 { 2 } else { 1 }
-    );
-    let json = api_get("/api/v1/recommend/series-feed", &query).await?;
+    // A channel without a `tab_type` cannot answer a feed request at all (HTTP 400); its blocks
+    // were inline anyway.
+    if tab_type == 0 {
+        return Ok((Vec::new(), None));
+    }
+
+    // Parameter sets differ per block: some accept the selector hint, some reject it. Try the
+    // richest first and fall back to the bare form instead of failing the whole page.
+    let selector = if offset == 0 { 2 } else { 1 };
+    let candidates = [
+        format!(
+            "cell_id={cell_id}&tab_type={tab_type}&client_template=2&client_req_type=2&offset={offset}&unlimited_selector_change_type={selector}"
+        ),
+        format!(
+            "cell_id={cell_id}&tab_type={tab_type}&client_template=2&client_req_type=2&offset={offset}"
+        ),
+        format!("cell_id={cell_id}&tab_type={tab_type}&offset={offset}"),
+    ];
+
+    let mut json = Value::Null;
+    let mut last_error = String::new();
+    for query in &candidates {
+        match api_get("/api/v1/recommend/series-feed", query).await {
+            Ok(value) => {
+                json = value;
+                break;
+            }
+            Err(err) => last_error = err,
+        }
+    }
+    if json.is_null() {
+        return Err(last_error);
+    }
     let data = json.get("data").cloned().unwrap_or(Value::Null);
 
     let has_more = !matches!(data.get("has_more"), Some(Value::Bool(false)) | None);

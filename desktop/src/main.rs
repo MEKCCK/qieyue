@@ -76,6 +76,7 @@ enum Msg {
     Home(Home),
     RankCatalog(fqapp_desktop::RankCatalog),
     RankPage { hits: Vec<Hit>, append: bool },
+    HomeMoreFailed { section: usize },
     Manga { pages: Vec<String> },
     HomeAppend {
         section: usize,
@@ -180,7 +181,10 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                     hits,
                     next,
                 },
-                Err(err) => Msg::Error(err),
+                Err(err) => {
+                    eprintln!("home_more: {err}");
+                    Msg::HomeMoreFailed { section }
+                }
             },
             Cmd::Category(tab) => match category_front(tab).await {
                 Ok(front) => Msg::Category(front),
@@ -576,8 +580,21 @@ impl App {
                         self.status = format!("榜单到底了（{} 条）", self.rank_hits.len());
                     }
                 }
+                Msg::HomeMoreFailed { section } => {
+                    // Drop the offset so the view stops asking; the block simply has no more.
+                    if let Some(home) = self.home.as_mut() {
+                        if let Some(target) = home.sections.get_mut(section) {
+                            target.next_offset = None;
+                        }
+                    }
+                    self.home_loading_more = false;
+                    self.status = "这个区块到底了".to_string();
+                }
                 Msg::Played(text) => self.status = text,
-                Msg::Error(err) => self.status = err,
+                Msg::Error(err) => {
+                    self.home_loading_more = false;
+                    self.status = err;
+                }
             }
         }
     }
