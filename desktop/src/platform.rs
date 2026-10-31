@@ -5,6 +5,7 @@
 //! does not inherit the shell's `PATH`, where Homebrew's mpv usually lives.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use eframe::egui;
 
@@ -80,6 +81,38 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
             .insert(0, "cjk".to_owned());
     }
     ctx.set_fonts(fonts);
+}
+
+/// The packaged icon has to be decoded at startup; a 256px RGBA buffer is
+/// small enough to embed and is what Linux window managers expect.
+const ICON_PNG: &[u8] = include_bytes!("../../assets/branding/icon-256.png");
+/// In-app mark, drawn in the navigation rail.
+const LOGO_PNG: &[u8] = include_bytes!("../../assets/branding/icon-128.png");
+
+pub(crate) fn window_icon() -> Arc<egui::IconData> {
+    let image = image::load_from_memory(ICON_PNG)
+        .expect("embedded app icon")
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    Arc::new(egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    })
+}
+
+/// Uploads the brand mark once, so every frame can draw it by handle.
+pub(crate) fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
+    let image = image::load_from_memory(LOGO_PNG)
+        .expect("embedded brand logo")
+        .to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let pixels = image.into_raw();
+    ctx.load_texture(
+        "brand-logo",
+        egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
+        egui::TextureOptions::LINEAR,
+    )
 }
 
 /// mpv binary. `QIEYUE_MPV` overrides; otherwise common install locations are

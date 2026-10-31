@@ -8,6 +8,7 @@ pub(crate) mod empty;
 pub(crate) mod home;
 pub(crate) mod library;
 pub(crate) mod manga;
+pub(crate) mod nav;
 pub(crate) mod rank;
 pub(crate) mod reader;
 pub(crate) mod results;

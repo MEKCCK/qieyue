@@ -12,3 +12,7 @@
 # Local-only state
 .agents/
 /assets/config/device_pool.json
+
+# Packaging output
+/build/
+/dist/

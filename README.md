@@ -1,5 +1,9 @@
 # 茄阅 · QieYue
 
+<p align="center">
+  <img src="assets/branding/icon-256.png" width="120" alt="茄阅 QieYue">
+</p>
+
 一个**纯 Rust** 的 Linux / macOS 桌面客户端：看小说、看漫画、追短剧、听书。
 
 界面用 `egui`/`eframe` 写，业务逻辑直接复用上游项目的 Rust 核心 `fqapi_core`
@@ -15,6 +19,10 @@
 
 只支持 Linux 与 macOS；Windows 用上游的 Flutter 客户端。视频与音频交给系统里的 `mpv`
 （含 CENC 解密密钥），不内嵌播放器。
+
+界面是左侧标签式导航：**首页 / 书架 / 排行榜 / 分类**。每个标签有自己的页面栈，
+从书架打开一本书、切到首页再回来，仍停在原来的阅读页；详情、阅读器、漫画和短剧都在
+标签内以页面形式打开。列表按行虚拟化，切标签不会重新加载已有数据。
 
 ## 功能
 

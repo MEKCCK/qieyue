@@ -81,6 +81,43 @@ qieyue
 - `FQAPP_DEMO_MANGA=<book_id>` 直接打开某本漫画第一话
 - `FQAPP_DEMO_SERIES=<series_id>` 直接打开某个短剧
 - `FQAPP_DEMO_VIEW=library|rank|category` 直接进对应页面
+- `QIEYUE_SCREENSHOT=/tmp/ui.png` 在首屏稳定后把窗口帧缓冲写成 PNG 并退出
+  （`QIEYUE_SCREENSHOT_DELAY_MS` 可调等待时间，默认 2500；不需要屏幕录制权限）
+
+## 品牌资源
+
+`assets/branding/` 里是可提交的成品；源文件是两张 SVG：
+
+- `icon.svg`：应用图标（Linux 图标、窗口图标、应用内标识）
+- `logo.svg`：横版标识（README / 网站）
+
+已提交的 PNG 和 macOS `.icns` 用脚本重新生成：
+
+```sh
+./scripts/generate-branding.sh
+```
+
+需要 `rsvg-convert`；macOS 的 `.icns` 还需要 `iconutil`/`sips` 和 ImageMagick。
+macOS 图标会按苹果的图标网格留出透明边距（832/1024），避免在 Dock 里显得过大；
+同时有一圈淡描边，深色背景下也能看清。
+
+## 打包
+
+macOS（生成 `build/macos/QieYue.app`，带 Dock 图标）：
+
+```sh
+./packaging/macos/bundle.sh
+open build/macos/QieYue.app
+```
+
+Linux（安装到 `~/.local`）：
+
+```sh
+./packaging/linux/install.sh
+```
+
+系统级安装用 `PREFIX=/usr/local sudo ./packaging/linux/install.sh`。两个平台的细节见
+[packaging/README](../packaging/README.md)。
 
 ## 同步上游
 

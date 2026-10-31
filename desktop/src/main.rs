@@ -10,6 +10,7 @@ compile_error!("qieyue only supports Linux and macOS");
 
 mod app;
 mod platform;
+mod theme;
 mod views;
 mod worker;
 
@@ -32,8 +33,9 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 860.0])
-            .with_min_inner_size([760.0, 520.0])
-            .with_title("茄阅"),
+            .with_min_inner_size([980.0, 640.0])
+            .with_title("茄阅")
+            .with_icon(platform::window_icon()),
         ..Default::default()
     };
 
@@ -42,8 +44,10 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             platform::install_fonts(&cc.egui_ctx);
+            theme::install(&cc.egui_ctx);
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(app::App::new(cmd_tx, msg_rx)))
+            let logo = platform::load_logo(&cc.egui_ctx);
+            Ok(Box::new(app::App::new(cmd_tx, msg_rx, logo)))
         }),
     )
 }

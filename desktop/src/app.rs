@@ -8,7 +8,6 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use eframe::egui;
-use egui::Color32;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use qieyue::{
@@ -43,16 +42,76 @@ pub(crate) enum View {
     Category,
 }
 
+/// Root tabs of the shell. Each one owns a navigation stack, so a comic opened
+/// from the shelf is still there after a detour through the home tab.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tab {
+    Home,
+    Library,
+    Rank,
+    Category,
+}
+
+impl Tab {
+    pub(crate) const ALL: [Tab; 4] = [Tab::Home, Tab::Library, Tab::Rank, Tab::Category];
+
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Tab::Home => 0,
+            Tab::Library => 1,
+            Tab::Rank => 2,
+            Tab::Category => 3,
+        }
+    }
+
+    pub(crate) fn root(self) -> View {
+        match self {
+            Tab::Home => View::Home,
+            Tab::Library => View::Library,
+            Tab::Rank => View::Rank,
+            Tab::Category => View::Category,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Tab::Home => "首页",
+            Tab::Library => "书架",
+            Tab::Rank => "排行榜",
+            Tab::Category => "分类",
+        }
+    }
+}
+
+/// One entry of a tab's navigation stack. `owner` is the content id the page
+/// was opened for, so restoring a tab after opening another book elsewhere
+/// cannot show mismatched content.
+#[derive(Clone, PartialEq, Eq)]
+struct Page {
+    view: View,
+    owner: Option<String>,
+}
+
+impl Page {
+    fn root(view: View) -> Self {
+        Self { view, owner: None }
+    }
+}
+
 pub(crate) struct App {
     cmds: tokio_mpsc::UnboundedSender<Command>,
     msgs: Receiver<Reply>,
+    /// Brand mark uploaded once at startup.
+    pub(crate) logo: egui::TextureHandle,
 
     pub(crate) query: String,
     pub(crate) status: String,
     pub(crate) loading: bool,
 
+    pub(crate) tab: Tab,
+    /// Per-tab navigation stacks; index 0 is the tab root.
+    stacks: [Vec<Page>; 4],
     pub(crate) view: View,
-    history: Vec<View>,
     pub(crate) hits: Vec<Hit>,
     pub(crate) search_query: String,
     pub(crate) search_next: Option<usize>,
@@ -104,18 +163,40 @@ pub(crate) struct App {
     demo_manga_stage: u8,
     /// `FQAPP_DEMO_CHANNEL=5:4:12` switches to that home channel once the first page arrives.
     demo_channel: Option<(u32, u32, String)>,
+
+    /// Optional framebuffer screenshot for UI review and CI
+    /// (`QIEYUE_SCREENSHOT=/path.png`). It reads the app's own framebuffer, so
+    /// it needs no screen-recording permission.
+    screenshot: Option<ScreenshotPlan>,
+}
+
+struct ScreenshotPlan {
+    path: std::path::PathBuf,
+    deadline: std::time::Instant,
+    requested: bool,
 }
 
 impl App {
-    pub(crate) fn new(cmds: tokio_mpsc::UnboundedSender<Command>, msgs: Receiver<Reply>) -> Self {
+    pub(crate) fn new(
+        cmds: tokio_mpsc::UnboundedSender<Command>,
+        msgs: Receiver<Reply>,
+        logo: egui::TextureHandle,
+    ) -> Self {
         Self {
             cmds,
             msgs,
+            logo,
             query: String::new(),
             status: "输入关键词开始搜索".to_string(),
             loading: false,
+            tab: Tab::Home,
+            stacks: [
+                vec![Page::root(View::Home)],
+                vec![Page::root(View::Library)],
+                vec![Page::root(View::Rank)],
+                vec![Page::root(View::Category)],
+            ],
             view: View::Empty,
-            history: Vec::new(),
             hits: Vec::new(),
             search_query: String::new(),
             search_next: None,
@@ -164,19 +245,164 @@ impl App {
                 let template = parts.next().unwrap_or("0").to_string();
                 Some((tab_type, index, template))
             }),
+            screenshot: std::env::var_os("QIEYUE_SCREENSHOT").map(|path| ScreenshotPlan {
+                path: std::path::PathBuf::from(path),
+                deadline: std::time::Instant::now()
+                    + Duration::from_millis(
+                        std::env::var("QIEYUE_SCREENSHOT_DELAY_MS")
+                            .ok()
+                            .and_then(|value| value.parse().ok())
+                            .unwrap_or(2500),
+                    ),
+                requested: false,
+            }),
         }
     }
 
-    /// Navigates and remembers where we came from, so 返回 always has somewhere to go.
+    /// Pushes a page onto the active tab's stack. `owner` lets a restored tab
+    /// drop pages whose content has been replaced from another tab.
     pub(crate) fn go(&mut self, view: View) {
         if view != self.view {
-            self.history.push(self.view);
+            let owner = self.content_owner(view);
+            self.stacks[self.tab.index()].push(Page { view, owner });
             self.view = view;
         }
     }
 
+    fn content_owner(&self, view: View) -> Option<String> {
+        match view {
+            View::Book | View::Reader | View::Manga => {
+                self.book.as_ref().map(|book| book.id.clone())
+            }
+            View::Series => self.series.as_ref().map(|series| series.id.clone()),
+            View::Results => Some(self.search_query.clone()),
+            _ => None,
+        }
+    }
+
+    fn page_matches(&self, page: &Page) -> bool {
+        match &page.owner {
+            None => true,
+            Some(owner) => self.content_owner(page.view).as_deref() == Some(owner.as_str()),
+        }
+    }
+
+    pub(crate) fn can_go_back(&self) -> bool {
+        self.stacks[self.tab.index()].len() > 1
+    }
+
     pub(crate) fn go_back(&mut self) {
-        self.view = self.history.pop().unwrap_or(View::Home);
+        let index = self.tab.index();
+        let root = self.tab.root();
+        if self.stacks[index].len() <= 1 {
+            self.view = root;
+            return;
+        }
+
+        self.stacks[index].pop();
+        // A page restored from another checkout of this tab may no longer match
+        // the content currently loaded; walk down to the last valid page.
+        while self.stacks[index].len() > 1 {
+            let stale = {
+                let top = self.stacks[index].last().expect("root page");
+                !self.page_matches(top)
+            };
+            if !stale {
+                break;
+            }
+            self.stacks[index].pop();
+        }
+        self.view = self.stacks[index]
+            .last()
+            .map(|page| page.view)
+            .unwrap_or(root);
+    }
+
+    /// Switches root tabs. Clicking the active tab returns to its root.
+    pub(crate) fn select_tab(&mut self, tab: Tab) {
+        let index = tab.index();
+        if tab == self.tab {
+            self.stacks[index].truncate(1);
+            self.view = tab.root();
+            self.ensure_tab_loaded(tab);
+            return;
+        }
+
+        self.tab = tab;
+        while self.stacks[index].len() > 1 {
+            let stale = {
+                let top = self.stacks[index].last().expect("root page");
+                !self.page_matches(top)
+            };
+            if !stale {
+                break;
+            }
+            self.stacks[index].pop();
+        }
+        self.view = self.stacks[index]
+            .last()
+            .map(|page| page.view)
+            .unwrap_or_else(|| tab.root());
+        self.ensure_tab_loaded(tab);
+    }
+
+    /// Lazy root load. Only called when entering a tab, never per frame, so a
+    /// failed request is retried by clicking the tab again instead of looping.
+    fn ensure_tab_loaded(&mut self, tab: Tab) {
+        match tab {
+            Tab::Home => {
+                if self.home.is_none() && !self.is_pending(RequestKind::Home) {
+                    self.send(Cmd::Home, "加载首页…");
+                }
+            }
+            Tab::Library => {
+                self.shelf = load_shelf();
+            }
+            Tab::Rank => {
+                if self.rank.is_none() {
+                    if !self.is_pending(RequestKind::RankCatalog) {
+                        self.send(Cmd::RankCatalog, "加载榜单…");
+                    }
+                } else if self.rank_hits.is_empty() && !self.is_pending(RequestKind::RankPage) {
+                    self.request_rank_page();
+                }
+            }
+            Tab::Category => {
+                if self.category.is_none() && !self.is_pending(RequestKind::Category) {
+                    self.send(Cmd::Category(self.category_tab), "加载分类…");
+                }
+            }
+        }
+    }
+
+    fn request_rank_page(&mut self) {
+        let rank_id = self.rank_id.clone();
+        self.rank_hits.clear();
+        self.rank_more = true;
+        self.send(
+            Cmd::RankPage {
+                rank_id,
+                algo: self.rank_algo.clone(),
+                category: self.rank_category.clone(),
+                offset: 0,
+            },
+            "加载榜单…",
+        );
+    }
+
+    pub(crate) fn page_title(&self) -> &'static str {
+        match self.view {
+            View::Empty => "茄阅",
+            View::Home => "首页",
+            View::Library => "书架",
+            View::Rank => "排行榜",
+            View::Results => "搜索结果",
+            View::Book => "书籍详情",
+            View::Series => "短剧",
+            View::Reader => "阅读",
+            View::Manga => "漫画",
+            View::Category => "分类",
+        }
     }
 
     /// Queues one request. A write to the channel never blocks the UI: the
@@ -351,7 +577,6 @@ impl App {
                     self.status =
                         format!("{} 个标签 · {} 个频道", front.tiles.len(), front.tabs.len());
                     self.category = Some(front);
-                    self.go(View::Category);
                 }
                 Msg::Home(home) => {
                     self.home_tab_index = home.active;
@@ -372,7 +597,6 @@ impl App {
                         home.sections.iter().map(|s| s.hits.len()).sum::<usize>()
                     );
                     self.home = Some(home);
-                    self.go(View::Home);
                 }
                 Msg::HomeAppend {
                     section,
@@ -404,13 +628,19 @@ impl App {
                 }
                 Msg::RankCatalog(catalog) => {
                     self.rank_id = catalog.rank_id.clone();
+                    if let Some(first) = catalog.boards.first() {
+                        self.rank_algo = first.algo.clone();
+                    }
+                    self.rank_category = "0".to_string();
                     self.status = format!(
                         "{} 个榜单 · {} 个分类",
                         catalog.boards.len(),
                         catalog.categories.len()
                     );
                     self.rank = Some(catalog);
-                    self.go(View::Rank);
+                    if self.tab == Tab::Rank {
+                        self.request_rank_page();
+                    }
                 }
                 Msg::RankPage { hits, append } => {
                     let fresh = if append {
@@ -459,8 +689,8 @@ impl App {
         }
     }
 
-    /// First load / scripted entry point: decides which view to open once the
-    /// app is alive. Kept out of `update` so the layout code stays readable.
+    /// First load / scripted entry point. Tabs load lazily on entry; this only
+    /// decides which tab the app opens on.
     fn bootstrap(&mut self) {
         if let Ok(series_id) = std::env::var("FQAPP_DEMO_SERIES") {
             if !self.home_requested && !self.loading {
@@ -473,32 +703,28 @@ impl App {
                     "加载剧集…",
                 );
             }
-        } else if let Ok(book) = std::env::var("FQAPP_DEMO_MANGA") {
+            return;
+        }
+        if let Ok(book) = std::env::var("FQAPP_DEMO_MANGA") {
             if self.demo_manga_stage == 0 && !self.home_requested && !self.loading {
                 self.home_requested = true;
                 self.send(Cmd::OpenBook(book), "打开漫画…");
             }
-        } else if let Ok(view) = std::env::var("FQAPP_DEMO_VIEW") {
-            if self.demo_done == 0 && !self.home_requested {
-                self.home_requested = true;
-                self.view = match view.as_str() {
-                    "library" => View::Library,
-                    "category" => View::Category,
-                    "rank" => View::Rank,
-                    _ => View::Home,
-                };
-                self.shelf = load_shelf();
-                match self.view {
-                    View::Home => self.send(Cmd::Home, "加载首页…"),
-                    View::Rank => self.send(Cmd::RankCatalog, "加载榜单…"),
-                    View::Category => self.send(Cmd::Category(1), "加载分类…"),
-                    _ => {}
-                }
-            }
-        } else if !self.home_requested && !self.loading {
-            self.home_requested = true;
-            self.send(Cmd::Home, "加载首页…");
+            return;
         }
+        if self.view != View::Empty {
+            return;
+        }
+
+        let tab = match std::env::var("FQAPP_DEMO_VIEW").as_deref() {
+            Ok("library") => Tab::Library,
+            Ok("category") => Tab::Category,
+            Ok("rank") => Tab::Rank,
+            _ => Tab::Home,
+        };
+        self.tab = tab;
+        self.view = tab.root();
+        self.ensure_tab_loaded(tab);
     }
 
     fn advance_demo(&mut self) {
@@ -677,6 +903,55 @@ impl App {
             ctx.request_repaint();
         }
     }
+
+    /// Debug/CI hook: waits for the first load to settle, asks the renderer for
+    /// the window framebuffer, writes it as PNG and closes the app.
+    fn capture_screenshot(&mut self, ctx: &egui::Context) {
+        let Some(plan) = self.screenshot.as_ref() else {
+            return;
+        };
+
+        if !plan.requested {
+            let now = std::time::Instant::now();
+            let settled = now >= plan.deadline
+                && (!self.loading || now >= plan.deadline + Duration::from_secs(15));
+            if !settled {
+                ctx.request_repaint_after(Duration::from_millis(100));
+                return;
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            if let Some(plan) = self.screenshot.as_mut() {
+                plan.requested = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        let image = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let Some(image) = image else {
+            return;
+        };
+
+        if let Some(plan) = self.screenshot.take() {
+            let width = image.size[0] as u32;
+            let height = image.size[1] as u32;
+            if let Err(err) = image::save_buffer(
+                &plan.path,
+                image.as_raw(),
+                width,
+                height,
+                image::ColorType::Rgba8,
+            ) {
+                eprintln!("screenshot: {err}");
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -698,6 +973,8 @@ impl eframe::App for App {
         self.bootstrap();
         self.advance_demo();
 
+        // Side rail first: the top bar then spans the content area only.
+        views::nav::show(self, ctx);
         views::chrome::show(self, ctx);
         match self.view {
             View::Empty => views::empty::show(self, ctx),
@@ -711,14 +988,7 @@ impl eframe::App for App {
             View::Category => views::category::show(self, ctx),
             View::Rank => views::rank::show(self, ctx, wheel_down),
         }
-    }
-}
 
-/// Status colour shared by the top bar.
-pub(crate) fn status_color(loading: bool) -> Color32 {
-    if loading {
-        Color32::from_rgb(200, 150, 60)
-    } else {
-        Color32::GRAY
+        self.capture_screenshot(ctx);
     }
 }
