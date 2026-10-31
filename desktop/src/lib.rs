@@ -92,12 +92,25 @@ pub async fn search(query: &str) -> Result<Vec<Book>, String> {
     Ok(books)
 }
 
-pub async fn open_book(id: &str) -> Result<(String, String, String, Vec<Chapter>), String> {
+pub struct BookDetail {
+    pub title: String,
+    pub author: String,
+    pub summary: String,
+    pub cover: String,
+    pub chapters: Vec<Chapter>,
+}
+
+pub async fn open_book(id: &str) -> Result<BookDetail, String> {
     let detail = api_get(&format!("/api/v1/books/{}/detail", url_encode(id)), "").await?;
     let data = detail.get("data").cloned().unwrap_or(Value::Null);
     let title = text_of(&data, "book_name");
     let author = text_of(&data, "author");
     let summary = first_non_empty(&[text_of(&data, "abstract"), text_of(&data, "book_abstract_v2")]);
+    let cover = first_non_empty(&[
+        text_of(&data, "thumb_url"),
+        text_of(&data, "horiz_thumb_url"),
+        text_of(&data, "audio_thumb_uri"),
+    ]);
 
     let directory = api_get(&format!("/api/v1/books/{}/directory", url_encode(id)), "").await?;
     let mut chapters = Vec::new();
@@ -117,7 +130,13 @@ pub async fn open_book(id: &str) -> Result<(String, String, String, Vec<Chapter>
             });
         }
     }
-    Ok((title, author, summary, chapters))
+    Ok(BookDetail {
+        title,
+        author,
+        summary,
+        cover,
+        chapters,
+    })
 }
 
 pub async fn read_chapter(item_id: &str) -> Result<(String, Vec<String>), String> {
@@ -387,6 +406,9 @@ pub struct ShelfEntry {
     pub id: String,
     pub title: String,
     pub author: String,
+    /// Cover URL, so the shelf page can render a real grid like the original.
+    #[serde(default)]
+    pub cover: String,
     pub item_id: String,
     pub chapter_title: String,
     pub index: usize,
@@ -488,7 +510,11 @@ pub async fn search_hits(query: &str) -> Result<Vec<Hit>, String> {
 
 /// One page of a feed block. The payload nests the cards one level deep:
 /// `data.cell_view.cell_data[0].cell_data[]` holds the actual rows.
-pub async fn series_feed(cell_id: &str, tab_type: u32, offset: usize) -> Result<Vec<Hit>, String> {
+pub async fn series_feed_page(
+    cell_id: &str,
+    tab_type: u32,
+    offset: usize,
+) -> Result<(Vec<Hit>, Option<usize>), String> {
     let query = format!(
         "cell_id={cell_id}&tab_type={tab_type}&client_template=2&client_req_type=2&offset={offset}\
          &unlimited_selector_change_type={}",
@@ -496,6 +522,17 @@ pub async fn series_feed(cell_id: &str, tab_type: u32, offset: usize) -> Result<
     );
     let json = api_get("/api/v1/recommend/series-feed", &query).await?;
     let data = json.get("data").cloned().unwrap_or(Value::Null);
+
+    let has_more = !matches!(data.get("has_more"), Some(Value::Bool(false)) | None);
+    let next_offset = text_of(&data, "next_offset")
+        .parse::<usize>()
+        .ok()
+        .or_else(|| {
+            data.get("next_offset")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize)
+        })
+        .filter(|_| has_more);
 
     let mut hits = Vec::new();
     let mut collect = |items: &[Value]| {
@@ -522,7 +559,20 @@ pub async fn series_feed(cell_id: &str, tab_type: u32, offset: usize) -> Result<
                 .unwrap_or(&[]),
         );
     }
-    Ok(hits)
+    Ok((hits, next_offset))
+}
+
+pub async fn series_feed(cell_id: &str, tab_type: u32, offset: usize) -> Result<Vec<Hit>, String> {
+    Ok(series_feed_page(cell_id, tab_type, offset).await?.0)
+}
+
+/// Pulls the next page of one home block.
+pub async fn home_more(
+    cell_id: &str,
+    tab_type: u32,
+    offset: usize,
+) -> Result<(Vec<Hit>, Option<usize>), String> {
+    series_feed_page(cell_id, tab_type, offset).await
 }
 
 /// `/api/v1/recommend/homepage` returns `data.tab_item[]`, and each tab carries `cell_data[]`
@@ -532,6 +582,10 @@ pub async fn series_feed(cell_id: &str, tab_type: u32, offset: usize) -> Result<
 pub struct HomeSection {
     pub title: String,
     pub hits: Vec<Hit>,
+    /// Feed blocks can be paged; a plain card grid (e.g. 排行榜) arrives complete and has none.
+    pub cell_id: String,
+    pub tab_type: u32,
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -626,13 +680,19 @@ async fn parse_home(json: Value, active: usize) -> Result<Home, String> {
                         .map(|_| text_of(cell, "cell_id_str"))
                 })
                 .filter(|id| !id.is_empty());
+            let mut next_offset = None;
+            let mut feed_id = String::new();
             if let Some(cell_id) = feed_cell {
-                match series_feed(&cell_id, tab_type, 0).await {
-                    Ok(extra) => {
+                match series_feed_page(&cell_id, tab_type, 0).await {
+                    Ok((extra, next)) => {
                         for hit in extra {
                             if !hits.iter().any(|existing: &Hit| existing.id == hit.id) {
                                 hits.push(hit);
                             }
+                        }
+                        if next.is_some() {
+                            feed_id = cell_id;
+                            next_offset = next;
                         }
                     }
                     Err(err) => eprintln!("series-feed {cell_id}: {err}"),
@@ -640,7 +700,13 @@ async fn parse_home(json: Value, active: usize) -> Result<Home, String> {
             }
 
             if !hits.is_empty() {
-                sections.push(HomeSection { title, hits });
+                sections.push(HomeSection {
+                    title,
+                    hits,
+                    cell_id: feed_id,
+                    tab_type,
+                    next_offset,
+                });
             }
         }
     }
@@ -799,4 +865,52 @@ pub fn update_progress(book_id: &str, item_id: &str, chapter_title: &str, index:
     if let Err(err) = save_shelf(&shelf) {
         eprintln!("update shelf: {err}");
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// audiobooks
+// ---------------------------------------------------------------------------------------------
+
+/// Resolves the audio track of one chapter. The service answers with a play-info envelope whose
+/// `data[]` carries `main_url`/`backup_url`; both point at the same mp3/m4a stream.
+pub async fn audio_source(book_id: &str, item_id: &str, tone_id: &str) -> Result<String, String> {
+    let tone = if tone_id.trim().is_empty() { "0" } else { tone_id.trim() };
+    let json = api_get(
+        &format!(
+            "/api/v1/audio/books/{}/chapters/{}",
+            url_encode(book_id),
+            url_encode(item_id)
+        ),
+        &format!("tone_id={tone}"),
+    )
+    .await?;
+
+    let data = json.get("data").cloned().unwrap_or(Value::Null);
+    let candidates = data
+        .as_array()
+        .cloned()
+        .or_else(|| data.get("data").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+
+    for entry in candidates {
+        for key in ["main_url", "backup_url"] {
+            let url = text_of(&entry, key);
+            if url.starts_with("http") {
+                return Ok(url);
+            }
+        }
+    }
+
+    // Some envelopes nest the play info one level deeper.
+    let flat = json.to_string();
+    if let Some(index) = flat.find("\"main_url\":\"http") {
+        let rest = &flat[index + 12..];
+        if let Some(end) = rest.find('"') {
+            return Ok(rest[..end].to_string());
+        }
+    }
+    Err(format!(
+        "没拿到音频地址（{}）",
+        text_of(&json, "message")
+    ))
 }

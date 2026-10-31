@@ -18,7 +18,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
-    let (title, author, summary, chapters) = fqapp_desktop::open_book(&first.id).await?;
+    let detail = fqapp_desktop::open_book(&first.id).await?;
+    let (title, author, summary) = (detail.title, detail.author, detail.summary);
+    let chapters = detail.chapters;
+    println!("cover: {}", !detail.cover.is_empty());
     println!(
         "detail: {title} / {author} / {} chapters / {:?}",
         chapters.len(),
@@ -37,6 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: first.id.clone(),
         title: title.clone(),
         author: author.clone(),
+        cover: detail.cover.clone(),
         item_id: chapter.item_id.clone(),
         chapter_title: chapter_title.clone(),
         index: 0,
@@ -73,19 +77,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Search paging: the second page must add rows, not repeat the first.
-    let first = fqapp_desktop::search_page("斗破", 0, None).await?;
-    let second = fqapp_desktop::search_page("斗破", 10, None).await?;
-    let overlap = second
+    let page_one = fqapp_desktop::search_page("斗破", 0, None).await?;
+    let page_two = fqapp_desktop::search_page("斗破", 10, None).await?;
+    let overlap = page_two
         .hits
         .iter()
-        .filter(|hit| first.hits.iter().any(|a| a.id == hit.id))
+        .filter(|hit| page_one.hits.iter().any(|a| a.id == hit.id))
         .count();
     println!(
         "paging: page1={} page2={} overlap={overlap} next={:?}→{:?}",
-        first.hits.len(),
-        second.hits.len(),
-        first.next_offset,
-        second.next_offset
+        page_one.hits.len(),
+        page_two.hits.len(),
+        page_one.next_offset,
+        page_two.next_offset
     );
 
     // Home feed: tabs plus the recommendation blocks of the first tab.
@@ -123,6 +127,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Audiobook: the play-info envelope must yield a stream URL mpv can open.
+    match fqapp_desktop::audio_source(&first.id, &chapter.item_id, "0").await {
+        Ok(url) => println!("audio: {url}"),
+        Err(err) => println!("audio failed: {err}"),
+    }
+
+    // Home paging: pull one more page of the first block that advertises a next offset.
+    if let Some(section) = front_home
+        .sections
+        .iter()
+        .find(|section| section.next_offset.is_some())
+    {
+        let before = section.hits.len();
+        let next = section.next_offset.unwrap();
+        let (more, after) =
+            fqapp_desktop::home_more(&section.cell_id, section.tab_type, next).await?;
+        println!(
+            "home paging: {} {} -> +{} cards, next {:?} -> {:?}",
+            section.title, before, more.len(), Some(next), after
+        );
+    } else {
+        println!("home paging: no block offers a next offset");
+    }
+
     // Categories: channels, dimensions and the tile counts per dimension.
     let front = fqapp_desktop::category_front(1).await?;
     println!(
@@ -147,6 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: "test-book".to_string(),
         title: "测试".to_string(),
         author: String::new(),
+        cover: String::new(),
         item_id: String::new(),
         chapter_title: String::new(),
         index: 0,

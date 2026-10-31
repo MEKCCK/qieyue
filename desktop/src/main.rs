@@ -22,6 +22,7 @@ struct BookInfo {
     title: String,
     author: String,
     summary: String,
+    cover: String,
 }
 
 enum Cmd {
@@ -30,12 +31,19 @@ enum Cmd {
     OpenSeries(String),
     OpenChapter(String),
     PlayEpisode { vid: String, title: String },
+    PlayAudio { book_id: String, item_id: String, title: String },
     Category(u32),
     Home,
     HomeChannel {
         tab_type: u32,
         tab_index: u32,
         client_template: String,
+    },
+    HomeMore {
+        section: usize,
+        cell_id: String,
+        tab_type: u32,
+        offset: usize,
     },
 }
 
@@ -50,6 +58,7 @@ enum Msg {
         title: String,
         author: String,
         summary: String,
+        cover: String,
         chapters: Vec<Chapter>,
     },
     Series(Series),
@@ -60,6 +69,11 @@ enum Msg {
     Played(String),
     Category(CategoryFront),
     Home(Home),
+    HomeAppend {
+        section: usize,
+        hits: Vec<Hit>,
+        next: Option<usize>,
+    },
     Error(String),
 }
 
@@ -83,12 +97,13 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 }
             }
             Cmd::OpenBook(id) => match open_book(&id).await {
-                Ok((title, author, summary, chapters)) => Msg::Detail {
+                Ok(detail) => Msg::Detail {
                     id,
-                    title,
-                    author,
-                    summary,
-                    chapters,
+                    title: detail.title,
+                    author: detail.author,
+                    summary: detail.summary,
+                    cover: detail.cover,
+                    chapters: detail.chapters,
                 },
                 Err(err) => Msg::Error(err),
             },
@@ -98,6 +113,17 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
             },
             Cmd::OpenChapter(item_id) => match read_chapter(&item_id).await {
                 Ok((title, paragraphs)) => Msg::Chapter { title, paragraphs },
+                Err(err) => Msg::Error(err),
+            },
+            Cmd::PlayAudio {
+                book_id,
+                item_id,
+                title,
+            } => match fqapp_desktop::audio_source(&book_id, &item_id, "0").await {
+                Ok(url) => match spawn_mpv_audio(&url, &title) {
+                    Ok(()) => Msg::Played(format!("mpv 正在朗读: {title}")),
+                    Err(err) => Msg::Error(err),
+                },
                 Err(err) => Msg::Error(err),
             },
             Cmd::Home => match home().await {
@@ -110,6 +136,19 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
                 client_template,
             } => match fqapp_desktop::home_channel(tab_type, tab_index, &client_template).await {
                 Ok(home) => Msg::Home(home),
+                Err(err) => Msg::Error(err),
+            },
+            Cmd::HomeMore {
+                section,
+                cell_id,
+                tab_type,
+                offset,
+            } => match fqapp_desktop::home_more(&cell_id, tab_type, offset).await {
+                Ok((hits, next)) => Msg::HomeAppend {
+                    section,
+                    hits,
+                    next,
+                },
                 Err(err) => Msg::Error(err),
             },
             Cmd::Category(tab) => match category_front(tab).await {
@@ -128,6 +167,18 @@ async fn worker(mut cmds: tokio_mpsc::UnboundedReceiver<Cmd>, msgs: Sender<Msg>)
             break;
         }
     }
+}
+
+fn spawn_mpv_audio(url: &str, title: &str) -> Result<(), String> {
+    std::process::Command::new("mpv")
+        .arg("--no-video")
+        .arg(format!("--title={title}"))
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("启动 mpv 失败（PATH 里有 mpv 吗？）: {e}"))
 }
 
 /// The downloaded episode is still CENC encrypted, so mpv needs the key as well.
@@ -181,6 +232,7 @@ fn install_fonts(ctx: &egui::Context) {
 enum View {
     Empty,
     Home,
+    Library,
     Results,
     Book,
     Series,
@@ -208,6 +260,7 @@ struct App {
     series: Option<Series>,
     home: Option<Home>,
     home_tab_index: u32,
+    home_loading_more: bool,
     home_requested: bool,
     category: Option<CategoryFront>,
     category_tab: u32,
@@ -245,6 +298,7 @@ impl App {
             series: None,
             home: None,
             home_tab_index: 0,
+            home_loading_more: false,
             home_requested: false,
             category: None,
             category_tab: 1,
@@ -312,6 +366,7 @@ impl App {
                     title,
                     author,
                     summary,
+                    cover,
                     chapters,
                 } => {
                     self.status = format!("{} · {} 章", title, chapters.len());
@@ -320,6 +375,7 @@ impl App {
                         title,
                         author,
                         summary,
+                        cover,
                     });
                     self.chapters = chapters;
                     self.view = View::Book;
@@ -392,6 +448,25 @@ impl App {
                     self.home = Some(home);
                     self.view = View::Home;
                 }
+                Msg::HomeAppend {
+                    section,
+                    hits,
+                    next,
+                } => {
+                    if let Some(home) = self.home.as_mut() {
+                        if let Some(target) = home.sections.get_mut(section) {
+                            for hit in hits {
+                                if !target.hits.iter().any(|existing| existing.id == hit.id) {
+                                    target.hits.push(hit);
+                                }
+                            }
+                            target.next_offset = next;
+                            let total: usize = home.sections.iter().map(|s| s.hits.len()).sum();
+                            self.status = format!("已加载 {total} 张卡片");
+                        }
+                    }
+                    self.home_loading_more = false;
+                }
                 Msg::Played(text) => self.status = text,
                 Msg::Error(err) => self.status = err,
             }
@@ -455,6 +530,7 @@ impl App {
                 id: book.id.clone(),
                 title: book.title.clone(),
                 author: book.author.clone(),
+                cover: book.cover.clone(),
                 item_id,
                 chapter_title,
                 index: self.chapter_index,
@@ -465,6 +541,26 @@ impl App {
             };
         }
         self.shelf = load_shelf();
+    }
+
+    /// Reads the current chapter aloud through mpv (audio only).
+    fn play_audio(&mut self) {
+        let Some(book) = self.book.clone() else {
+            self.status = "先打开一本书".to_string();
+            return;
+        };
+        let Some(chapter) = self.chapters.get(self.chapter_index).cloned() else {
+            self.status = "还没有章节".to_string();
+            return;
+        };
+        self.send(
+            Cmd::PlayAudio {
+                book_id: book.id,
+                item_id: chapter.item_id,
+                title: chapter.title,
+            },
+            "解析音频…",
+        );
     }
 
     fn open_shelf_entry(&mut self, entry: ShelfEntry) {
@@ -489,7 +585,20 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
-        if !self.home_requested && !self.loading {
+        if let Ok(view) = std::env::var("FQAPP_DEMO_VIEW") {
+            if self.demo_done == 0 && !self.home_requested {
+                self.home_requested = true;
+                self.view = match view.as_str() {
+                    "library" => View::Library,
+                    "category" => View::Category,
+                    _ => View::Home,
+                };
+                self.shelf = load_shelf();
+                if self.view == View::Home {
+                    self.send(Cmd::Home, "加载首页…");
+                }
+            }
+        } else if !self.home_requested && !self.loading {
             self.home_requested = true;
             self.send(Cmd::Home, "加载首页…");
         }
@@ -516,6 +625,10 @@ impl eframe::App for App {
                         "搜索中…",
                     );
                 }
+                if ui.button("书架").clicked() {
+                    self.shelf = load_shelf();
+                    self.view = View::Library;
+                }
                 if ui.button("首页").clicked() {
                     self.send(Cmd::Home, "加载首页…");
                 }
@@ -539,48 +652,6 @@ impl eframe::App for App {
             });
             ui.add_space(4.0);
         });
-
-        if !self.shelf.is_empty() {
-            egui::SidePanel::left("shelf")
-                .resizable(true)
-                .default_width(210.0)
-                .show(ctx, |ui| {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new("书架").strong());
-                    ui.separator();
-                    let mut open = None;
-                    let mut remove = None;
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for entry in &self.shelf {
-                            let label = format!("{}\n{}", entry.title, entry.chapter_title);
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .add(
-                                        egui::Label::new(RichText::new(label).size(13.0))
-                                            .sense(egui::Sense::click()),
-                                    )
-                                    .clicked()
-                                {
-                                    open = Some(entry.clone());
-                                }
-                                if ui.small_button("✕").on_hover_text("移出书架").clicked() {
-                                    remove = Some(entry.id.clone());
-                                }
-                            });
-                            ui.separator();
-                        }
-                    });
-                    if let Some(id) = remove {
-                        if let Err(err) = remove_shelf(&id) {
-                            eprintln!("remove shelf: {err}");
-                        }
-                        self.shelf = load_shelf();
-                    }
-                    if let Some(entry) = open {
-                        self.open_shelf_entry(entry);
-                    }
-                });
-        }
 
         match self.view {
             View::Empty => {
@@ -607,24 +678,21 @@ impl eframe::App for App {
                 };
                 let mut clicked: Option<Hit> = None;
                 let mut switch_tab: Option<(u32, u32, String)> = None;
+                let mut load_more: Option<(usize, String, u32, usize)> = None;
+                let mut at_bottom = false;
+
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
+                    let output = egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             for tab in &front.tabs {
                                 let selected = tab.index == self.home_tab_index;
                                 if ui
-                                    .selectable_label(
-                                        selected,
-                                        RichText::new(&tab.title).size(14.0),
-                                    )
+                                    .selectable_label(selected, RichText::new(&tab.title).size(14.0))
                                     .clicked()
                                     && !selected
                                 {
-                                    switch_tab = Some((
-                                        tab.tab_type,
-                                        tab.index,
-                                        tab.client_template.clone(),
-                                    ));
+                                    switch_tab =
+                                        Some((tab.tab_type, tab.index, tab.client_template.clone()));
                                 }
                             }
                         });
@@ -657,8 +725,56 @@ impl eframe::App for App {
                                 }
                             });
                         }
+                        if let Some((index, section)) = front
+                            .sections
+                            .iter()
+                            .enumerate()
+                            .find(|(_, section)| section.next_offset.is_some())
+                        {
+                            ui.add_space(10.0);
+                            if ui.button("加载更多").clicked() {
+                                load_more = Some((
+                                    index,
+                                    section.cell_id.clone(),
+                                    section.tab_type,
+                                    section.next_offset.unwrap_or(0),
+                                ));
+                            }
+                        }
                     });
+                    at_bottom = output.state.offset.y + output.inner_rect.height()
+                        >= output.content_size.y - 260.0;
                 });
+
+                if load_more.is_none() && at_bottom {
+                    if let Some((index, section)) = front
+                        .sections
+                        .iter()
+                        .enumerate()
+                        .find(|(_, section)| section.next_offset.is_some())
+                    {
+                        load_more = Some((
+                            index,
+                            section.cell_id.clone(),
+                            section.tab_type,
+                            section.next_offset.unwrap_or(0),
+                        ));
+                    }
+                }
+                if let Some((section, cell_id, tab_type, offset)) = load_more {
+                    if !self.home_loading_more {
+                        self.home_loading_more = true;
+                        self.send(
+                            Cmd::HomeMore {
+                                section,
+                                cell_id,
+                                tab_type,
+                                offset,
+                            },
+                            "加载更多…",
+                        );
+                    }
+                }
                 if let Some((tab_type, index, template)) = switch_tab {
                     self.home_tab_index = index;
                     self.send(
@@ -746,12 +862,72 @@ impl eframe::App for App {
                     }
                 }
             }
+            View::Library => {
+                let mut open = None;
+                let mut drop = None;
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("我的书架").size(19.0).strong());
+                        ui.label(
+                            RichText::new(format!("{} 本", self.shelf.len()))
+                                .size(13.0)
+                                .color(Color32::GRAY),
+                        );
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        if self.shelf.is_empty() {
+                            ui.add_space(60.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    RichText::new("书架还是空的，在详情页点「加入书架」")
+                                        .color(Color32::GRAY),
+                                );
+                            });
+                            return;
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            for entry in &self.shelf {
+                                let card = ui.allocate_ui(egui::vec2(126.0, 220.0), |ui| {
+                                    ui.vertical(|ui| {
+                                        Self::cover(ui, &entry.cover, egui::vec2(118.0, 158.0));
+                                        let title: String = entry.title.chars().take(16).collect();
+                                        ui.label(RichText::new(title).size(12.5));
+                                        let chapter: String =
+                                            entry.chapter_title.chars().take(14).collect();
+                                        ui.label(
+                                            RichText::new(chapter)
+                                                .size(11.0)
+                                                .color(Color32::GRAY),
+                                        );
+                                        if ui.small_button("移出").clicked() {
+                                            drop = Some(entry.id.clone());
+                                        }
+                                    });
+                                });
+                                if card.response.interact(egui::Sense::click()).clicked() {
+                                    open = Some(entry.clone());
+                                }
+                            }
+                        });
+                    });
+                });
+                if let Some(id) = drop {
+                    let _ = remove_shelf(&id);
+                    self.shelf = load_shelf();
+                }
+                if let Some(entry) = open {
+                    self.open_shelf_entry(entry);
+                }
+            }
             View::Book => {
                 let Some(book) = self.book.clone() else {
                     self.view = View::Results;
                     return;
                 };
                 let mut toggle = false;
+                let mut listen = false;
                 egui::SidePanel::right("chapters")
                     .resizable(true)
                     .default_width(320.0)
@@ -780,6 +956,9 @@ impl eframe::App for App {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.add_space(8.0);
+                        ui.horizontal_top(|ui| {
+                            Self::cover(ui, &book.cover, egui::vec2(96.0, 128.0));
+                            ui.vertical(|ui| {
                         ui.label(RichText::new(&book.title).size(24.0).strong());
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&book.author).color(Color32::GRAY));
@@ -790,19 +969,32 @@ impl eframe::App for App {
                                 toggle = true;
                             }
                         });
+                            });
+                        });
                         ui.add_space(10.0);
                         ui.label(&book.summary);
                         ui.add_space(14.0);
-                        if ui
-                            .button(RichText::new("从第一章开始读").size(16.0))
-                            .clicked()
-                        {
-                            self.open_chapter(0);
-                        }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(RichText::new("从第一章开始读").size(16.0))
+                                .clicked()
+                            {
+                                self.open_chapter(0);
+                            }
+                            if ui
+                                .button(RichText::new("听书（本章）").size(16.0))
+                                .clicked()
+                            {
+                                listen = true;
+                            }
+                        });
                     });
                 });
                 if toggle {
                     self.toggle_shelf();
+                }
+                if listen {
+                    self.play_audio();
                 }
             }
             View::Series => {
@@ -935,6 +1127,7 @@ impl eframe::App for App {
             }
             View::Reader => {
                 let mut toggle = false;
+                let mut listen = false;
                 egui::TopBottomPanel::bottom("reader_nav").show(ctx, |ui| {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -969,6 +1162,9 @@ impl eframe::App for App {
                         {
                             toggle = true;
                         }
+                        if ui.button("听书").clicked() {
+                            listen = true;
+                        }
                         ui.separator();
                         ui.label(RichText::new(&self.chapter_title).color(Color32::GRAY));
                     });
@@ -995,6 +1191,9 @@ impl eframe::App for App {
                 });
                 if toggle {
                     self.toggle_shelf();
+                }
+                if listen {
+                    self.play_audio();
                 }
             }
         }
