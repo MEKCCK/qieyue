@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="200" viewBox="0 0 760 200" role="img" aria-label="茄阅 QieYue">
+  <defs>
+    <linearGradient id="bg" x1="88" y1="36" x2="432" y2="484" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff8a63"/>
+      <stop offset="0.55" stop-color="#ef4b37"/>
+      <stop offset="1" stop-color="#d23a2f"/>
+    </linearGradient>
+    <linearGradient id="page" x1="256" y1="190" x2="256" y2="376" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fffaf1"/>
+      <stop offset="1" stop-color="#f1ddc3"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="248" y1="132" x2="284" y2="210" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9ad982"/>
+      <stop offset="1" stop-color="#3f8a46"/>
+    </linearGradient>
+    <clipPath id="tile"><rect width="512" height="512" rx="116"/></clipPath>
+  </defs>
+
+  <g transform="translate(16 16) scale(0.328125)">
+    <g clip-path="url(#tile)">
+      <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+      <circle cx="146" cy="92" r="188" fill="#ffffff" opacity="0.10"/>
+      <circle cx="414" cy="448" r="152" fill="#7d140f" opacity="0.12"/>
+    </g>
+    <rect x="6" y="6" width="500" height="500" rx="110" fill="none"
+          stroke="#ffffff" stroke-opacity="0.18" stroke-width="6"/>
+    <path d="M256 218c-42-26-96-31-146-16v152c50-15 104-10 146 18z" fill="url(#page)"/>
+    <path d="M256 218c42-26 96-31 146-16v152c-50-15-104-10-146 18z" fill="url(#page)"/>
+    <path d="M256 218v154" stroke="#dcc2a0" stroke-width="8" stroke-linecap="round"/>
+    <g stroke="#d3b995" stroke-width="9" stroke-linecap="round" opacity="0.85">
+      <path d="M146 254c33-7 66-2 88 10"/>
+      <path d="M146 292c33-7 66-2 88 10"/>
+      <path d="M278 264c22-12 55-17 88-10"/>
+      <path d="M278 302c22-12 55-17 88-10"/>
+    </g>
+    <path d="M256 212c-24-28-30-58-9-80 27 7 43 35 35 78z" fill="url(#leaf)"/>
+    <path d="M256 212c0-29 2-54-9-80" stroke="#2f6b36" stroke-width="7" stroke-linecap="round" fill="none"/>
+    <path d="M324 218v70l-20-15-20 15v-70z" fill="#f6b44c"/>
+  </g>
+
+  <text x="214" y="102" font-family="PingFang SC, Hiragino Sans GB, Noto Sans CJK SC, sans-serif" font-size="78" font-weight="700" letter-spacing="2" fill="#f6f2ea">茄阅</text>
+  <text x="217" y="152" font-family="Helvetica Neue, Arial, sans-serif" font-size="25" letter-spacing="9" fill="#b9b2a8">QIEYUE</text>
+</svg>

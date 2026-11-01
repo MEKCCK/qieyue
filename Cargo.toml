@@ -1,7 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["rust", "desktop"]
+# rust/ is a pristine copy of ch6vip/fqapp's core: never add code there.
+# Project code lives in desktop/ (Tauri v2 shell + ui/) and fqcore/ (headless daemon).
+members = ["rust", "desktop", "fqcore"]
 
 [profile.release]
 # The core does a lot of small JSON and crypto work; LTO pays for itself.
 lto = "thin"
+# Keep Cargo's defaults for `codegen-units` (16) and job count (all logical
+# CPUs): both parallelize the build. The `[profile.*]` sections in
+# rust/Cargo.toml are ignored inside a workspace, so do not move them up
+# here — `codegen-units = 1` would serialize code generation.

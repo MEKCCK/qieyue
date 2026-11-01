@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=茄阅
+Name[en]=QieYue
+Comment=小说、漫画与短剧桌面客户端
+Exec=qieyue
+Icon=qieyue
+Terminal=false
+Categories=Network;Viewer;
+StartupWMClass=qieyue

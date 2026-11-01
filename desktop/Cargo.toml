@@ -2,14 +2,28 @@
 name = "qieyue"
 version = "0.1.0"
 edition = "2021"
-description = "Pure Rust desktop client for the fqapi_core backend"
+description = "Tauri v2 desktop client for the fqapi_core backend"
+build = "build.rs"
+
+[lib]
+name = "qieyue"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qieyue"
+path = "src/main.rs"
+
+[[bin]]
+name = "smoke"
+path = "src/bin/smoke.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
 fqapi_core = { path = "../rust" }
-eframe = "0.31"
-egui = "0.31"
-serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tauri = { version = "2.12.5", features = ["protocol-asset"] }
 serde = { version = "1", features = ["derive"] }
-egui_extras = { version = "0.31", features = ["image", "http"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+serde_json = "1"
+futures = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

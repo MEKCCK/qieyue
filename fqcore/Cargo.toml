@@ -1,0 +1,10 @@
+[package]
+name = "fqcore"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Headless fqapi_core daemon for exercising the local REST adapter"
+
+[dependencies]
+fqapi_core = { path = "../rust" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
