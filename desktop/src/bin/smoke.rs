@@ -97,6 +97,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let (path, key) = qieyue::resolve_episode(&episode.vid).await?;
                 let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 println!("resolved: {path} ({size} bytes) key={} chars", key.len());
+
+                // Quality tiers: what the player row offers for that same episode.
+                let variants = qieyue::episode_variants(&episode.vid).await?;
+                println!(
+                    "variants: {} -> {:?}",
+                    variants.len(),
+                    variants
+                        .iter()
+                        .map(|variant| (
+                            variant.name.clone(),
+                            variant.height,
+                            !variant.key.is_empty()
+                        ))
+                        .collect::<Vec<_>>()
+                );
             }
         }
         None => println!("no short drama in search hits"),

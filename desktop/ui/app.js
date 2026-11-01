@@ -60,6 +60,8 @@ const state = {
   chapterTitle: '',
   paragraphs: [],
   series: null,
+  /** Quality chooser: { vid, title, index, list } while the user picks a tier. */
+  quality: null,
   rank: null,
   rankId: '',
   rankAlgo: '101',
@@ -549,6 +551,7 @@ function openSeries(id, cover = '') {
     onOk: (series) => {
       if (!series.cover) series.cover = cover;
       state.series = series;
+      state.quality = null;
       go('series');
       render();
     },
@@ -623,10 +626,26 @@ function loadComments(offset) {
 }
 
 function playEpisode(vid, title, episodeIndex) {
-  setStatus('解析视频…');
-  call('play', () => invoke('play_episode', { vid, title }), {
+  setStatus('解析清晰度…');
+  call('play', () => invoke('episode_variants', { vid }), {
+    onOk: (list) => {
+      if (!list || !list.length) { toast('这一集没有可用的清晰度'); setStatus(''); return; }
+      if (list.length === 1) { playVariant(list[0], vid, title, episodeIndex); return; }
+      // Several tiers: let the player row pick, like the upstream quality row.
+      state.quality = { vid, title, index: episodeIndex, list };
+      setStatus('选择清晰度');
+      render();
+    },
+    onErr: toast,
+  });
+}
+
+function playVariant(variant, vid, title, episodeIndex) {
+  state.quality = null;
+  setStatus(`播放 ${variant.name}…`);
+  call('play', () => invoke('play_variant', { url: variant.url, key: variant.key, title }), {
     onOk: () => {
-      setStatus(`mpv 已启动: ${title}`);
+      setStatus(`mpv 已启动: ${title}（${variant.name}）`);
       if (state.series && inShelf(state.series.id)) {
         invoke('update_progress', {
           book_id: state.series.id,
@@ -638,6 +657,7 @@ function playEpisode(vid, title, episodeIndex) {
     },
     onErr: toast,
   });
+  render();
 }
 
 function playAudio() {
@@ -1027,7 +1047,19 @@ function renderSeries() {
         <div class="summary">${esc(series.intro)}</div>
       </div>
     </div>
+    ${qualityRow(series)}
     <div class="divider"></div>${episodes}`;
+}
+
+function qualityRow(series) {
+  const pick = state.quality;
+  if (!pick || !state.series || state.series.id !== series.id) return '';
+  const buttons = pick.list.map((variant, index) => `
+    <button data-action="play-quality" data-index="${index}">${esc(variant.name)}</button>`).join('');
+  return `<div class="divider"></div>
+    <div class="comments-head"><h3>清晰度 · 第 ${pick.index} 集</h3>
+      <button class="ghost" data-action="cancel-quality">取消</button></div>
+    <div class="book-actions">${buttons}</div>`;
 }
 
 function renderReader() {
@@ -1193,6 +1225,17 @@ function bindEvents() {
         break;
       case 'play-episode':
         playEpisode(element.dataset.vid, element.dataset.title, Number(element.dataset.index));
+        break;
+      case 'play-quality': {
+        const pick = state.quality;
+        const variant = pick && pick.list[Number(element.dataset.index)];
+        if (!variant) { toast('清晰度已失效，请重新选择剧集'); break; }
+        playVariant(variant, pick.vid, pick.title, pick.index);
+        break;
+      }
+      case 'cancel-quality':
+        state.quality = null;
+        render();
         break;
       case 'prev-chapter':
         openChapter(state.chapterIndex - 1);

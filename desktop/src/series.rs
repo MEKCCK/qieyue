@@ -84,3 +84,77 @@ pub async fn resolve_episode(vid: &str) -> Result<(String, String), String> {
     }
     Ok((local.display().to_string(), key))
 }
+
+/// One quality tier of an episode, as returned by the stream endpoint.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct VideoVariant {
+    pub name: String,
+    pub height: u32,
+    pub url: String,
+    pub key: String,
+}
+
+/// Quality tiers for one episode.
+///
+/// The download path always picks whatever the backend considers best (it has no quality
+/// parameter), so switching quality means streaming the chosen variant URL straight into mpv
+/// with its own `cenc-aes-ctr` key. The top-level `video_url` is repeated as 默认 when the
+/// variants list is empty.
+pub async fn episode_variants(vid: &str) -> Result<Vec<VideoVariant>, String> {
+    let stream = api_get(
+        &format!("/api/v1/videos/{}", url_encode(vid)),
+        "mode=stream",
+    )
+    .await?;
+
+    let mut out: Vec<VideoVariant> = Vec::new();
+
+    for entry in stream
+        .get("variants")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = text_of(entry, "name");
+        let height = text_of(entry, "height").parse::<u32>().unwrap_or(0);
+        push_variant(
+            &mut out,
+            if name.is_empty() {
+                format!("{height}P")
+            } else {
+                name
+            },
+            height,
+            text_of(entry, "url"),
+            text_of(entry, "key_hex"),
+        );
+    }
+
+    if out.is_empty() {
+        push_variant(
+            &mut out,
+            "默认".to_string(),
+            0,
+            text_of(&stream, "video_url"),
+            text_of(&stream, "key_hex"),
+        );
+    }
+
+    if out.is_empty() {
+        return Err("这一集没有可用的清晰度".to_string());
+    }
+    Ok(out)
+}
+
+/// Adds a tier unless the URL is already listed or is not a playable stream.
+fn push_variant(out: &mut Vec<VideoVariant>, name: String, height: u32, url: String, key: String) {
+    if !url.starts_with("http") || out.iter().any(|existing| existing.url == url) {
+        return;
+    }
+    out.push(VideoVariant {
+        name,
+        height,
+        url,
+        key,
+    });
+}

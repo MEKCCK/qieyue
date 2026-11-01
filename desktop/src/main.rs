@@ -38,6 +38,8 @@ fn main() {
             commands::remove_shelf,
             commands::update_progress,
             commands::play_episode,
+            commands::episode_variants,
+            commands::play_variant,
             commands::play_audio,
         ])
         .run(tauri::generate_context!())

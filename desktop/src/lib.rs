@@ -39,7 +39,7 @@ pub use parse::{html_to_paragraphs, url_encode};
 pub use paths::data_dir;
 pub use rank::{rank_catalog, rank_page};
 pub use search::{search, search_hits, search_page};
-pub use series::{open_series, resolve_episode};
+pub use series::{episode_variants, open_series, resolve_episode, VideoVariant};
 pub use shelf::{
     add_shelf, load_shelf, remember, remove_shelf, save_shelf, series_shelf_entry, shelf_contains,
     update_progress,

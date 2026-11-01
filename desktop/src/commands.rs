@@ -126,6 +126,19 @@ pub async fn play_episode(vid: String, title: String) -> Result<(), String> {
     qieyue::spawn_mpv(&path, &key, &title)
 }
 
+/// Quality tiers of one episode; the UI shows a chooser when there is more than one.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn episode_variants(vid: String) -> Result<Vec<qieyue::VideoVariant>, String> {
+    qieyue::episode_variants(&vid).await
+}
+
+/// Plays one quality tier straight from its stream URL (the download path has no quality
+/// parameter), passing the tier's own key.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn play_variant(url: String, key: String, title: String) -> Result<(), String> {
+    qieyue::spawn_mpv(&url, &key, &title)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn play_audio(book_id: String, item_id: String, title: String) -> Result<String, String> {
     let (url, key, tone) = qieyue::audio_for_chapter(&book_id, &item_id).await?;
