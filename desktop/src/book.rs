@@ -16,11 +16,16 @@ pub async fn open_book(id: &str) -> Result<BookDetail, String> {
         text_of(&data, "book_abstract_v2"),
     ]);
     let is_comic = text_of(&data, "comic_book_type") == "1";
-    let cover = first_non_empty(&[
+    // Same HEIC caveat as series: keep the first artwork the system WebView can decode.
+    let cover = [
         text_of(&data, "thumb_url"),
+        text_of(&data, "detail_page_thumb_url"),
         text_of(&data, "horiz_thumb_url"),
         text_of(&data, "audio_thumb_uri"),
-    ]);
+    ]
+    .into_iter()
+    .find(|value| crate::series::is_displayable_cover(value))
+    .unwrap_or_default();
 
     let directory = api_get(&format!("/api/v1/books/{}/directory", url_encode(id)), "").await?;
     let mut chapters = Vec::new();

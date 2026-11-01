@@ -175,6 +175,10 @@ function esc(value) {
 
 function imageUrl(url) {
   if (!url) return '';
+  const path = url.split('?')[0].toLowerCase();
+  // WebKitGTK / older WKWebView cannot decode HEIC (the CDN's `aifit` template) or AVIF;
+  // rendering those leaves an empty box, so fall back to the placeholder instead.
+  if (path.endsWith('.heic') || path.endsWith('.heif') || path.endsWith('.avif')) return '';
   return url.startsWith('//') ? `https:${url}` : url;
 }
 
@@ -1021,6 +1025,7 @@ function renderCategory() {
 function renderBook() {
   if (!state.book) return loadingScreen('加载目录…');
   const book = state.book;
+  logDebug(`render book cover: ${imageUrl(book.cover || '').slice(0, 130) || '(empty)'}`);
   const chapters = state.chapters.map((chapter, index) => `
     <div class="chapter ${index === state.chapterIndex ? 'active' : ''}"
       data-action="chapter" data-index="${index}" title="${esc(chapter.title)}">${esc(chapter.title)}</div>`).join('');
@@ -1065,6 +1070,7 @@ function renderComments() {
 function renderSeries() {
   if (!state.series) return loadingScreen('加载剧集…');
   const series = state.series;
+  logDebug(`render series cover: ${imageUrl(series.cover || '').slice(0, 130) || '(empty)'}`);
   const own = inShelf(series.id);
   const episodes = series.episodes.map((episode) => `
     <button class="episode" data-action="play-episode" data-vid="${esc(episode.vid)}"

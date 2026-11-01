@@ -17,24 +17,23 @@ pub async fn open_series(id: &str) -> Result<Series, String> {
 
     let title = text_of(&data, "series_title");
     let intro = text_of(&data, "series_intro");
-    // `series_cover` is often missing; the episode rows still carry artwork.
-    let mut cover = text_of(&data, "series_cover");
-    if cover.is_empty() {
-        cover = data
-            .get("video_list")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .map(|item| {
-                first_non_empty(&[
-                    text_of(item, "episode_cover"),
-                    text_of(item, "cover"),
-                    text_of(item, "horiz_cover"),
-                ])
-            })
-            .find(|value| !value.is_empty())
-            .unwrap_or_default();
+    // `series_cover` is usually a HEIC template, which the system WebView cannot decode; the
+    // episode rows carry plain `.image` artwork, so prefer whatever we can actually show.
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(list) = data.get("video_list").and_then(Value::as_array) {
+        for item in list.iter().take(3) {
+            candidates.push(first_non_empty(&[
+                text_of(item, "episode_cover"),
+                text_of(item, "cover"),
+                text_of(item, "horiz_cover"),
+            ]));
+        }
     }
+    candidates.push(text_of(&data, "series_cover"));
+    let cover = candidates
+        .into_iter()
+        .find(|value| is_displayable_cover(value))
+        .unwrap_or_default();
 
     let mut episodes = Vec::new();
     if let Some(list) = data.get("video_list").and_then(Value::as_array) {
@@ -174,4 +173,14 @@ fn push_variant(out: &mut Vec<VideoVariant>, name: String, height: u32, url: Str
         url,
         key,
     });
+}
+
+/// HEIC/HEIF/AVIF artwork cannot be decoded by WebKitGTK (and by older WKWebView), so such a
+/// URL renders as an empty box. Everything else (`.image`, `.jpeg`, `.webp`, `.png`) is fine.
+pub(crate) fn is_displayable_cover(url: &str) -> bool {
+    let path = url.split('?').next().unwrap_or(url).to_ascii_lowercase();
+    if !(path.starts_with("http") || path.starts_with("//")) {
+        return false;
+    }
+    !(path.ends_with(".heic") || path.ends_with(".heif") || path.ends_with(".avif"))
 }
