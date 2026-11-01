@@ -516,3 +516,42 @@ button.ghost:hover { background: var(--surface-2); color: var(--text); }
   font-size: 13px;
   max-width: 180px;
 }
+
+/* Bottom audiobook bar (mpv is a separate process; this drives it over IPC). */
+.player {
+  position: fixed;
+  left: 84px;
+  right: 16px;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 22%);
+  z-index: 40;
+}
+.player.hidden { display: none; }
+.pl-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.pl-btn:hover { background: var(--hover, rgb(255 255 255 / 8%)); }
+.pl-btn:disabled { opacity: .35; cursor: default; }
+.pl-main { width: 40px; height: 40px; font-size: 17px; }
+.pl-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.pl-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pl-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pl-chapter { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.pl-time { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 38px; text-align: center; }
+.pl-seek { flex: 1; min-width: 60px; accent-color: var(--accent, #ff5c8a); }

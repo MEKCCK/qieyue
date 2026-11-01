@@ -41,6 +41,24 @@
     </div>
   </div>
 
+  <div id="player" class="player hidden">
+    <button id="pl-prev" class="pl-btn" title="上一章">⏮</button>
+    <button id="pl-toggle" class="pl-btn pl-main" title="播放 / 暂停">⏸</button>
+    <button id="pl-next" class="pl-btn" title="下一章">⏭</button>
+    <div class="pl-body">
+      <div class="pl-line">
+        <span id="pl-title" class="pl-title"></span>
+        <span id="pl-chapter" class="pl-chapter"></span>
+      </div>
+      <div class="pl-line">
+        <span id="pl-pos" class="pl-time">0:00</span>
+        <input id="pl-seek" class="pl-seek" type="range" min="0" max="0" step="1" value="0">
+        <span id="pl-dur" class="pl-time">0:00</span>
+      </div>
+    </div>
+    <button id="pl-close" class="pl-btn" title="关闭听书">✕</button>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
   <script src="app.js"></script>
 </body>

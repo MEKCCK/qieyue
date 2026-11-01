@@ -34,7 +34,10 @@ pub use comments::{book_comments, series_comments};
 pub use home::{home, home_channel, home_more, series_feed, series_feed_page};
 pub use manga::{manga_chapter, served_uri};
 pub use models::*;
-pub use mpv::{spawn_mpv, spawn_mpv_audio, stop_playback};
+pub use mpv::{
+    player_state, seek, set_paused, spawn_mpv, spawn_mpv_audio, stop_playback, toggle_paused,
+    PlayerState,
+};
 pub use parse::{html_to_paragraphs, url_encode};
 pub use paths::data_dir;
 pub use rank::{rank_catalog, rank_page};

@@ -7,7 +7,7 @@
 mod commands;
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|_app| {
             // Warm the core while the webview paints its first frame. The
             // frontend also awaits `backend_ready`, which is idempotent.
@@ -43,7 +43,18 @@ fn main() {
             commands::play_audio,
             commands::audio_tones,
             commands::stop_playback,
+            commands::player_state,
+            commands::seek_audio,
+            commands::toggle_pause,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running qieyue");
+        .build(tauri::generate_context!())
+        .expect("error while building qieyue");
+
+    // mpv is a separate process: when the window goes away the audiobook has to go with it,
+    // otherwise it keeps talking to an empty room.
+    app.run(|_app, event| {
+        if let tauri::RunEvent::Exit = event {
+            qieyue::stop_playback();
+        }
+    });
 }

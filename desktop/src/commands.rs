@@ -159,6 +159,22 @@ pub async fn play_audio(
     Ok(tone)
 }
 
+/// Live playback info for the audiobook bar.
+#[tauri::command(rename_all = "snake_case")]
+pub fn player_state() -> qieyue::PlayerState {
+    qieyue::player_state()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn seek_audio(position: f64) -> bool {
+    qieyue::seek(position)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn toggle_pause() -> bool {
+    qieyue::toggle_paused()
+}
+
 /// Stops the mpv this app started (audiobook playback).
 #[tauri::command(rename_all = "snake_case")]
 pub fn stop_playback() -> bool {

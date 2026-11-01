@@ -690,24 +690,153 @@ function toneSelect() {
   return `<select class="tone-select" data-role="tone" title="朗读音色">${options}</select>`;
 }
 
-function stopPlayback() {
-  invoke('stop_playback')
-    .then((stopped) => { setStatus(stopped ? '已停止播放' : '当前没有播放中的音频'); })
-    .catch((err) => toast(errorText(err)));
+/* ---- audiobook player ----------------------------------------------------
+   mpv runs as its own process; these helpers drive it over its JSON IPC socket
+   so the UI can show real progress, seek, and hop between chapters. */
+const player = { visible: false, timer: 0, dragging: false, sawDuration: false, advancing: false, misses: 0 };
+
+function clockText(seconds) {
+  const total = Math.max(0, Math.floor(seconds || 0));
+  const m = Math.floor(total / 60);
+  const sec = String(total % 60).padStart(2, '0');
+  return `${m}:${sec}`;
 }
 
-function playAudio() {
+function playerEl(id) { return document.getElementById(id); }
+
+function showPlayer(title) {
+  const bar = playerEl('player');
+  if (bar) bar.classList.remove('hidden');
+  player.visible = true;
+  player.sawDuration = false;
+  player.advancing = false;
+  if (title) playerEl('pl-title').textContent = title;
+  syncPlayerChapter();
+  if (!player.timer) player.timer = setInterval(pollPlayer, 1000);
+  pollPlayer();
+}
+
+function hidePlayer() {
+  const bar = playerEl('player');
+  if (bar) bar.classList.add('hidden');
+  player.visible = false;
+  if (player.timer) { clearInterval(player.timer); player.timer = 0; }
+}
+
+function syncPlayerChapter() {
+  const label = playerEl('pl-chapter');
+  if (!label) return;
+  const total = state.chapters.length;
+  if (!total) { label.textContent = ''; return; }
+  label.textContent = `第 ${state.chapterIndex + 1} / ${total} 章`;
+  const prev = playerEl('pl-prev');
+  const next = playerEl('pl-next');
+  if (prev) prev.disabled = state.chapterIndex <= 0;
+  if (next) next.disabled = state.chapterIndex + 1 >= total;
+}
+
+async function pollPlayer() {
+  if (!player.visible) return;
+  let info;
+  try {
+    info = await invoke('player_state');
+  } catch {
+    hidePlayer();
+    return;
+  }
+  if (!info || !info.connected) {
+    // mpv is really gone: either it finished the chapter (auto-advance) or it was killed.
+    player.misses += 1;
+    if (player.misses >= 2) {
+      player.misses = 0;
+      if (player.sawDuration) { advanceAudio(true); } else { hidePlayer(); }
+    }
+    return;
+  }
+  player.misses = 0;
+  if (info.duration > 0) player.sawDuration = true;
+
+
+  if (!player.dragging) {
+    const seek = playerEl('pl-seek');
+    if (seek) {
+      seek.max = String(Math.max(1, Math.round(info.duration)));
+      seek.value = String(Math.min(Math.round(info.position), Math.round(info.duration)));
+    }
+    const pos = playerEl('pl-pos');
+    if (pos) pos.textContent = clockText(info.position);
+  }
+  const dur = playerEl('pl-dur');
+  if (dur) dur.textContent = clockText(info.duration);
+  const toggle = playerEl('pl-toggle');
+  if (toggle) toggle.textContent = info.paused ? '▶' : '⏸';
+}
+
+function playAudioAt(index) {
   const book = state.book;
-  const chapter = state.chapters[state.chapterIndex];
+  const chapter = state.chapters[index];
   if (!book || !chapter) { toast('先打开一本书'); return; }
+  if (index !== state.chapterIndex) {
+    state.chapterIndex = index;
+    syncPlayerChapter();
+    if (state.view === 'reader') render({ keepScroll: true });
+  }
   setStatus('解析音频…');
   call('play', () => invoke('play_audio', {
     book_id: book.id, item_id: chapter.item_id, title: chapter.title,
     tone_id: state.toneId || null,
   }), {
-    onOk: (tone) => setStatus(`mpv 正在朗读（音色 ${tone}）`),
+    onOk: (tone) => {
+      setStatus(`朗读中：${chapter.title}（音色 ${tone}）`);
+      showPlayer(chapter.title);
+    },
     onErr: toast,
   });
+}
+
+function playAudio() {
+  playAudioAt(state.chapterIndex);
+}
+
+// Called when a chapter finishes; `ended` means mpv closed on its own.
+function advanceAudio(ended) {
+  if (player.advancing) return;
+  const next = state.chapterIndex + 1;
+  if (next >= state.chapters.length) { hidePlayer(); if (ended) setStatus('全书播放完毕'); return; }
+  player.advancing = true;
+  playAudioAt(next);
+  setTimeout(() => { player.advancing = false; }, 2500);
+}
+
+function stopPlayback() {
+  invoke('stop_playback')
+    .then((stopped) => {
+      hidePlayer();
+      setStatus(stopped ? '已停止播放' : '当前没有播放中的音频');
+    })
+    .catch((err) => toast(errorText(err)));
+}
+
+function bindPlayer() {
+  playerEl('pl-close')?.addEventListener('click', stopPlayback);
+  playerEl('pl-prev')?.addEventListener('click', () => { if (state.chapterIndex > 0) playAudioAt(state.chapterIndex - 1); });
+  playerEl('pl-next')?.addEventListener('click', () => { if (state.chapterIndex + 1 < state.chapters.length) playAudioAt(state.chapterIndex + 1); });
+  playerEl('pl-toggle')?.addEventListener('click', () => {
+    invoke('toggle_pause').then(() => setTimeout(pollPlayer, 120)).catch((err) => toast(errorText(err)));
+  });
+  const seek = playerEl('pl-seek');
+  if (seek) {
+    seek.addEventListener('input', () => {
+      player.dragging = true;
+      const pos = playerEl('pl-pos');
+      if (pos) pos.textContent = clockText(Number(seek.value));
+    });
+    seek.addEventListener('change', () => {
+      invoke('seek_audio', { position: Number(seek.value) })
+        .catch((err) => toast(errorText(err)))
+        .finally(() => { player.dragging = false; });
+    });
+  }
 }
 
 async function refreshShelfQuietly() {
@@ -1329,6 +1458,7 @@ async function boot() {
     logDebug(`rejection: ${errorText(event.reason)}`);
   });
   bindEvents();
+  bindPlayer();
   renderTabs();
   setStatus('连接后端…');
   render();
@@ -1344,6 +1474,9 @@ async function boot() {
   await refreshShelf();
   render();
   loadTab('home');
+  invoke('player_state')
+    .then((info) => { if (info && info.playing) showPlayer(playerEl('pl-title')?.textContent || ''); })
+    .catch(() => {});
   logDebug('home requested');
 }
 
