@@ -26,7 +26,7 @@ mod search;
 mod series;
 mod shelf;
 
-pub use audio::audio_for_chapter;
+pub use audio::{audio_for_chapter, audio_for_chapter_with, audio_tones, AudioTone};
 pub use backend::{api_get, init_backend};
 pub use book::{open_book, read_chapter};
 pub use category::category_front;
@@ -34,7 +34,7 @@ pub use comments::{book_comments, series_comments};
 pub use home::{home, home_channel, home_more, series_feed, series_feed_page};
 pub use manga::{manga_chapter, served_uri};
 pub use models::*;
-pub use mpv::{spawn_mpv, spawn_mpv_audio};
+pub use mpv::{spawn_mpv, spawn_mpv_audio, stop_playback};
 pub use parse::{html_to_paragraphs, url_encode};
 pub use paths::data_dir;
 pub use rank::{rank_catalog, rank_page};

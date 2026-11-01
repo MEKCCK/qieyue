@@ -3,6 +3,37 @@
 //! Shared by the Tauri shell and the headless smoke/test helpers.
 
 use std::path::{Path, PathBuf};
+use std::process::Child;
+use std::sync::Mutex;
+
+/// The mpv we spawned last. Only our own process is tracked, so stopping never
+/// touches an mpv the user started themselves.
+static PLAYBACK: Mutex<Option<Child>> = Mutex::new(None);
+
+fn remember(child: Child) {
+    if let Ok(mut slot) = PLAYBACK.lock() {
+        if let Some(mut previous) = slot.take() {
+            let _ = previous.kill();
+            let _ = previous.wait();
+        }
+        *slot = Some(child);
+    }
+}
+
+/// Stops the mpv this process started, if any. Returns whether something was running.
+pub fn stop_playback() -> bool {
+    let Ok(mut slot) = PLAYBACK.lock() else {
+        return false;
+    };
+    match slot.take() {
+        Some(mut child) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            true
+        }
+        None => false,
+    }
+}
 
 /// mpv binary. `QIEYUE_MPV` overrides; otherwise common install locations are
 /// probed before falling back to a `PATH` lookup (a GUI launched from Finder
@@ -47,15 +78,16 @@ pub fn spawn_mpv_audio(url: &str, key: &str, title: &str) -> Result<(), String> 
         // "Reserved bit set" and gives up.
         command.arg(format!("--demuxer-lavf-o=decryption_key={key}"));
     }
-    command
+    let child = command
         .arg("--no-video")
         .arg(format!("--title={title}"))
         .arg(url)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("启动 mpv 失败（{}）: {e}", install_hint()))
+        .map_err(|e| format!("启动 mpv 失败（{}）: {e}", install_hint()))?;
+    remember(child);
+    Ok(())
 }
 
 /// The downloaded episode is still CENC encrypted, so mpv needs the key as well.
@@ -68,10 +100,11 @@ pub fn spawn_mpv(path: &str, key: &str, title: &str) -> Result<(), String> {
         .arg(format!("--title={title}"))
         .arg("--force-window=yes")
         .arg(path);
-    command
+    let child = command
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("启动 mpv 失败（{}）: {e}", install_hint()))
+        .map_err(|e| format!("启动 mpv 失败（{}）: {e}", install_hint()))?;
+    remember(child);
+    Ok(())
 }

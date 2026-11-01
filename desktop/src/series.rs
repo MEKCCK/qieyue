@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::backend::api_get;
 use crate::models::{Episode, Series};
-use crate::parse::{text_of, url_encode};
+use crate::parse::{first_non_empty, text_of, url_encode};
 use crate::paths;
 
 pub async fn open_series(id: &str) -> Result<Series, String> {
@@ -17,7 +17,24 @@ pub async fn open_series(id: &str) -> Result<Series, String> {
 
     let title = text_of(&data, "series_title");
     let intro = text_of(&data, "series_intro");
-    let cover = text_of(&data, "series_cover");
+    // `series_cover` is often missing; the episode rows still carry artwork.
+    let mut cover = text_of(&data, "series_cover");
+    if cover.is_empty() {
+        cover = data
+            .get("video_list")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|item| {
+                first_non_empty(&[
+                    text_of(item, "episode_cover"),
+                    text_of(item, "cover"),
+                    text_of(item, "horiz_cover"),
+                ])
+            })
+            .find(|value| !value.is_empty())
+            .unwrap_or_default();
+    }
 
     let mut episodes = Vec::new();
     if let Some(list) = data.get("video_list").and_then(Value::as_array) {

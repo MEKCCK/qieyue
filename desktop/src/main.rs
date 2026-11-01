@@ -41,6 +41,8 @@ fn main() {
             commands::episode_variants,
             commands::play_variant,
             commands::play_audio,
+            commands::audio_tones,
+            commands::stop_playback,
         ])
         .run(tauri::generate_context!())
         .expect("error while running qieyue");

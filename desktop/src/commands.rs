@@ -139,9 +139,28 @@ pub async fn play_variant(url: String, key: String, title: String) -> Result<(),
     qieyue::spawn_mpv(&url, &key, &title)
 }
 
+/// Voices offered for one book: 智能朗读 plus the 真人讲书 narrators.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn play_audio(book_id: String, item_id: String, title: String) -> Result<String, String> {
-    let (url, key, tone) = qieyue::audio_for_chapter(&book_id, &item_id).await?;
+pub async fn audio_tones(book_id: String) -> Vec<qieyue::AudioTone> {
+    qieyue::audio_tones(&book_id).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn play_audio(
+    book_id: String,
+    item_id: String,
+    title: String,
+    tone_id: Option<String>,
+) -> Result<String, String> {
+    let (url, key, tone) =
+        qieyue::audio_for_chapter_with(&book_id, &item_id, tone_id.as_deref().unwrap_or(""))
+            .await?;
     qieyue::spawn_mpv_audio(&url, &key, &title)?;
     Ok(tone)
+}
+
+/// Stops the mpv this app started (audiobook playback).
+#[tauri::command(rename_all = "snake_case")]
+pub fn stop_playback() -> bool {
+    qieyue::stop_playback()
 }

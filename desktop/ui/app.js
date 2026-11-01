@@ -60,6 +60,8 @@ const state = {
   chapterTitle: '',
   paragraphs: [],
   series: null,
+  tones: [],
+  toneId: '',
   /** Quality chooser: { vid, title, index, list } while the user picks a tier. */
   quality: null,
   rank: null,
@@ -518,12 +520,15 @@ function loadCategory(tab) {
   });
 }
 
-function openBook(id, pendingItem = null) {
+function openBook(id, pendingItem = null, cardCover = '') {
   state.pendingItem = pendingItem;
   setStatus('加载目录…');
   call('book', () => invoke('open_book', { id }), {
     onOk: (detail) => {
-      state.book = { ...detail, id };
+      // The detail payload sometimes ships no artwork while the card that was
+      // clicked already had one; keep whichever we have.
+      state.book = { ...detail, id, cover: detail.cover || cardCover || '' };
+      logDebug(`book cover: ${state.book.cover ? 'yes' : 'empty'}`);
       state.chapters = detail.chapters;
       state.chapterIndex = 0;
       state.chapterTitle = '';
@@ -534,6 +539,7 @@ function openBook(id, pendingItem = null) {
       go('book');
       render();
       if (!detail.is_comic) loadComments(0);
+      loadTones(id);
       if (state.pendingItem) {
         const target = state.pendingItem;
         state.pendingItem = null;
@@ -660,6 +666,32 @@ function playVariant(variant, vid, title, episodeIndex) {
   render();
 }
 
+function loadTones(bookId) {
+  invoke('audio_tones', { book_id: bookId })
+    .then((tones) => {
+      state.tones = tones || [];
+      if (!state.tones.some((tone) => tone.id === state.toneId)) {
+        state.toneId = state.tones[0]?.id || '';
+      }
+      logDebug(`tones: ${state.tones.map((tone) => tone.name).join(' / ') || 'none'}`);
+      render({ keepScroll: true });
+    })
+    .catch(() => { state.tones = []; });
+}
+
+function toneSelect() {
+  if (!state.tones.length) return '';
+  const options = state.tones.map((tone) =>
+    `<option value="${esc(tone.id)}" ${tone.id === state.toneId ? 'selected' : ''}>${esc(tone.name)}</option>`).join('');
+  return `<select class="tone-select" data-role="tone" title="朗读音色">${options}</select>`;
+}
+
+function stopPlayback() {
+  invoke('stop_playback')
+    .then((stopped) => { setStatus(stopped ? '已停止播放' : '当前没有播放中的音频'); })
+    .catch((err) => toast(errorText(err)));
+}
+
 function playAudio() {
   const book = state.book;
   const chapter = state.chapters[state.chapterIndex];
@@ -667,6 +699,7 @@ function playAudio() {
   setStatus('解析音频…');
   call('play', () => invoke('play_audio', {
     book_id: book.id, item_id: chapter.item_id, title: chapter.title,
+    tone_id: state.toneId || null,
   }), {
     onOk: (tone) => setStatus(`mpv 正在朗读（音色 ${tone}）`),
     onErr: toast,
@@ -1003,6 +1036,8 @@ function renderBook() {
             <button class="primary" data-action="start-reading">${book.is_comic ? '从第一话开始看' : '从第一章开始读'}</button>
             <button data-action="toggle-shelf">${own ? '已在书架' : '加入书架'}</button>
             ${book.is_comic ? '' : '<button data-action="play-audio">听书（本章）</button>'}
+            ${book.is_comic ? '' : '<button data-action="stop-audio">停止听书</button>'}
+            ${book.is_comic ? '' : toneSelect()}
           </div>
         </div>
       </div>
@@ -1076,6 +1111,8 @@ function renderReader() {
       <button data-action="open-directory">目录</button>
       <button data-action="toggle-shelf">${own ? '已在书架' : '加入书架'}</button>
       <button data-action="play-audio">听书</button>
+      ${toneSelect()}
+      <button data-action="stop-audio">停止</button>
       <span class="spacer"></span>
       <span class="chapter-name">${esc(chapter?.title || state.chapterTitle)}</span>
     </div>`;
@@ -1144,20 +1181,30 @@ function bindEvents() {
     });
   });
 
-  content.addEventListener('click', (event) => {
+  content.addEventListener('change', (event) => {
+  const select = event.target.closest('[data-role="tone"]');
+  if (!select) return;
+  state.toneId = select.value;
+  setStatus(`音色已切换：${select.options[select.selectedIndex]?.textContent || ''}`);
+});
+
+content.addEventListener('click', (event) => {
     const element = event.target.closest('[data-action]');
     if (!element || !content.contains(element)) return;
     const action = element.dataset.action;
     switch (action) {
       case 'open-hit':
         if (element.dataset.series) openSeries(element.dataset.series, element.dataset.cover);
-        else openBook(element.dataset.id);
+        else openBook(element.dataset.id, null, element.dataset.cover || '');
         break;
       case 'open-shelf':
-        if (element.dataset.kind === 'series') openSeries(element.dataset.id);
+        if (element.dataset.kind === 'series') {
+          const entry = state.shelf.find((row) => row.id === element.dataset.id);
+          openSeries(element.dataset.id, entry?.cover || '');
+        }
         else {
           const entry = state.shelf.find((row) => row.id === element.dataset.id);
-          openBook(element.dataset.id, entry?.item_id || null);
+          openBook(element.dataset.id, entry?.item_id || null, entry?.cover || '');
         }
         break;
       case 'shelf-remove':
@@ -1222,6 +1269,9 @@ function bindEvents() {
         break;
       case 'play-audio':
         playAudio();
+        break;
+      case 'stop-audio':
+        stopPlayback();
         break;
       case 'play-episode':
         playEpisode(element.dataset.vid, element.dataset.title, Number(element.dataset.index));

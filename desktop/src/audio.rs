@@ -103,6 +103,62 @@ async fn audio_source_once(
 
 /// Tries the default voice first, then the book's 真人讲书 narrators: a pure-TTS book answers
 /// `NO_THIS_TONE` for tone 0, and only the `abook_id` rows yield audio.
+/// One selectable voice. `id` is what `tone_id` expects: `0` for 智能朗读,
+/// a narrator's `abook_id` for 真人讲书.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AudioTone {
+    pub id: String,
+    pub name: String,
+}
+
+pub async fn audio_tones(book_id: &str) -> Vec<AudioTone> {
+    let mut tones = vec![AudioTone {
+        id: "0".to_string(),
+        name: "智能朗读".to_string(),
+    }];
+
+    let Ok(json) = api_get(&format!("/api/v1/books/{}/tones", url_encode(book_id)), "").await
+    else {
+        return tones;
+    };
+    let data = json.get("data").cloned().unwrap_or(Value::Null);
+    for row in data
+        .get("audio_tones")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let id = text_of(row, "abook_id");
+        if id.is_empty() || tones.iter().any(|tone| tone.id == id) {
+            continue;
+        }
+        let name = text_of(row, "title");
+        tones.push(AudioTone {
+            id,
+            name: if name.is_empty() {
+                "真人讲书".to_string()
+            } else {
+                name
+            },
+        });
+    }
+    tones
+}
+
+/// Like [`audio_for_chapter`], but tries the user's pick first.
+pub async fn audio_for_chapter_with(
+    book_id: &str,
+    item_id: &str,
+    tone_id: &str,
+) -> Result<(String, String, String), String> {
+    if !tone_id.trim().is_empty() {
+        if let Ok((url, key)) = audio_source(book_id, item_id, tone_id).await {
+            return Ok((url, key, tone_id.trim().to_string()));
+        }
+    }
+    audio_for_chapter(book_id, item_id).await
+}
+
 pub async fn audio_for_chapter(
     book_id: &str,
     item_id: &str,
